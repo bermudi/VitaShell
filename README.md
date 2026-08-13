@@ -1,159 +1,118 @@
-# VitaShell (Unofficial Version 2.16)
+# VitaShell
 
-**⚠️ IMPORTANT: This is an unofficial version of VitaShell modified by theheroGAC**
+VitaShell is a file manager and system utility for the PlayStation Vita. It replaces the LiveArea with tools for managing files, installing packages, transferring files over FTP or USB, browsing media, and more.
 
-VitaShell is an alternative replacement of the PS Vita's LiveArea. It offers you a file manager, package installer, built-in FTP and much more.
-This homebrew was an entry of the Revitalize PS Vita homebrew competition and won the first prize. HENkaku's molecularShell is also based on VitaShell.
+This repository contains an unofficial VitaShell 2.16 build with front-touch support and additional maintenance fixes.
 
-## 🚀 What's New in Version 2.16 (Unofficial)
+> **Warning:** This is unofficial homebrew. Back up your data before installing or modifying system storage.
 
-### 🎮 Complete Touch Screen Support
-- **Front touch panel only** (touch screen exclusively)
-- **Precise touch navigation** without multiple selections
-- **Smooth touch scrolling** with drag and momentum
-- **Double tap for direct opening** of elements
-- **Context menu with double tap on right side**
-- **Touch context menu closing**
-- **Touch toggle in settings menu**
+## Features
 
-### ⚙️ Improvements and Fixes
-- **Smooth scrolling** without jerks or bounces
-- **Complete reach** to beginning and end of list
-- **Intuitive context menu closing** with touch
-- **Optimized performance** for touch input
-- **Persistent touch configuration**
+- File browser with copy, move, delete, rename, and archive support
+- `.vpk` package installation
+- FTP server and USB device mode
+- Text editor, hex editor, image viewer, and audio player
+- ZIP, 7z, TAR, and other archive formats
+- QR code scanning
+- LiveArea refresh
+- Front-touch navigation, scrolling, double-tap opening, and touch context menus
+- Custom themes and multiple languages
 
-## Changelog
-See [CHANGELOG.md](CHANGELOG.md)
+## Installation
 
-## How to use an USB flash drive as Memory Card on a PS TV
-- Format your USB flash drive as exFAT or FAT32.
-- Launch VitaShell and press `▲` in the `home` section.
-- Select `Mount uma0:` and attach your USB flash drive. You can now copy stuff from/to your USB stick.
-- Once `uma0:` is listed under the partitions, press `▲` again and choose `Mount USB ux0:`. This will copy important apps like VitaShell, molecularShell, and other files.
-- Your USB flash drive is now acting as a Memory Card.
-- To sync all your apps on your USB flash drive, press `▲` and choose `Refresh livearea`. This will NOT refresh PSP games.
-- If you wish to revert the patch, press `▲` and select `Umount USB ux0:`.
-- Note that this patch is only temporary and you need to redo the procedure everytime you launch your PS TV.
+1. Build or download `VitaShell.vpk`.
+2. Copy the VPK to the Vita using FTP, USB, or another supported method.
+3. Install it with VitaShell or another homebrew package installer.
 
-## Customization
-You can customize those files:
-
-| File                   | Note                        |
-| ---------------------- | --------------------------- |
-| colors.txt             | All colors adjustable       |
-| archive_icon.png       | Archive icon                |
-| audio_icon.png         | Audio icon                  |
-| battery.png            | Battery border icon         |
-| battery_bar_charge.png | Charging battery bar        |
-| battery_bar_green.png  | Green battery bar           |
-| battery_bar_red.png    | Red battery bar             |
-| bg_audioplayer.png     | Background for audio player |
-| bg_browser.png         | Background for file browser |
-| bg_hexeditor.png       | Background for hex editor   |
-| bg_photoviewer.png     | Background for photo viewer |
-| bg_texteditor.png      | Background for text editor  |
-| context.png            | Context menu image (Can be any size. Suggestion: It will look great if you add alpha channel to your image)  |
-| context_more.png       | Context menu more image (Can be any size. Suggestion: It will look great if you add alpha channel to your image)  |
-| cover.png              | Default album cover         |
-| dialog.png             | Dialog menu image (Can be any size. This image file will be stretched by VitaShell to fit the dialog box. Suggestion: Don't use motives, as it will not look good with wrong proportion)  |
-| fastforward.png        | Fastforward icon            |
-| fastrewind.png         | Fastrewind icon             |
-| file_icon.png          | File icon                   |
-| folder_icon.png        | Folder icon                 |
-| ftp.png                | FTP icon                    |
-| image_icon.png         | Image icon                  |
-| pause.png              | Pause icon                  |
-| play.png               | Play icon                   |
-| settings.png           | Settings icon               |
-| sfo_icon.png           | SFO icon                    |
-| text_icon.png          | Text icon                   |
-| wallpaper.png          | Wallpaper                   |
-
-**Theme setting:** VitaShell will load the theme that is set in `ux0:VitaShell/theme/theme.txt` (`THEME_NAME = "YOUR_THEME_NAME"`)
-
-**General info:** You don't need to have all these files in your custom theme, if one of them is missing, the default image file will be loaded instead.
-
-**Dialog and context image:** If these files are not available, the colors `DIALOG_BG_COLOR` and `CONTEXT_MENU_COLOR` from `colors.txt` will be used instead.
-
-## Multi-language
-Put your language file at `ux0:VitaShell/language/x.txt`, where the file must be UTF-8 encoded and `x` is one of the language listed below:
-
-- japanese
-- english_us
-- french
-- spanish
-- german
-- italian
-- dutch
-- portuguese
-- russian
-- korean
-- chinese_t
-- chinese_s
-- finnish
-- swedish
-- danish
-- norwegian
-- polish
-- portuguese_br
-- turkish
-
-VitaShell does automatically load the language that matches to the current system language.
-If your system language is for example french, it will load from `ux0:VitaShell/language/french.txt`.
-
-Languages files are available in the `l10n` folder of this repository.
+The application uses the title ID `VITASHELL`.
 
 ## Building
 
-### Official VitaShell Repository
-The official VitaShell can be found at: **https://github.com/TheOfficialFloW/VitaShell**
+Install the [VitaSDK](https://github.com/vitasdk) and make sure `VITASDK` points to your SDK installation. Then run:
 
-### This Unofficial Version
-This modified version with touch support can be found at: **https://github.com/theheroGAC/VitaShell**
-
-Install [Vita SDK](https://github.com/vitasdk) and build this modified version using:
-
+```sh
+git clone https://github.com/bermudi/VitaShell.git
+cd VitaShell
+cmake -S . -B build
+cmake --build build
 ```
-git clone https://github.com/theheroGAC/VitaShell
-cd VitaShell/
-mkdir build && cd build && cmake .. && cd modules/kernel && make && cd ../patch && make && cd ../usbdevice && make && cd ../user && make && cd ../.. && make
+
+The finished package is written to `build/VitaShell.vpk`.
+
+## PS TV USB storage
+
+VitaShell can temporarily mount a USB flash drive as `ux0:` on a PS TV:
+
+1. Format the drive as FAT32 or exFAT.
+2. Open VitaShell and press **Triangle** in the `home` section.
+3. Select **Mount uma0:** and connect the drive.
+4. Press **Triangle** again and select **Mount USB ux0:**.
+5. Use **Refresh LiveArea** to update applications on the drive.
+6. Select **Umount USB ux0:** before disconnecting or reverting the change.
+
+This mount is temporary and must be repeated after restarting the PS TV. Refreshing LiveArea does not refresh PSP games.
+
+## Themes
+
+Themes are loaded from:
+
+```text
+ux0:/VitaShell/theme/theme.txt
 ```
+
+Set the theme name in that file:
+
+```text
+THEME_NAME = "YOUR_THEME_NAME"
+```
+
+Theme assets are stored in the theme directory. Missing assets fall back to VitaShell's defaults. Colors can be changed in `colors.txt`; dialog and context-menu images can also be replaced with custom PNG files.
+
+## Languages
+
+Language files are stored in UTF-8 format at:
+
+```text
+ux0:/VitaShell/language/<language>.txt
+```
+
+Available translations are maintained in [`l10n/`](l10n/), including:
+
+- Bulgarian
+- Chinese (simplified and traditional)
+- Danish
+- Dutch
+- English (US)
+- Finnish
+- French
+- German
+- Greeklish
+- Hungarian
+- Italian
+- Japanese
+- Korean
+- Norwegian
+- Polish
+- Portuguese and Brazilian Portuguese
+- Russian
+- Spanish
+- Swedish
+- Turkish
+
+VitaShell selects the translation matching the system language when available.
+
+## Development
+
+- [Changelog](CHANGELOG.md)
+- [Original VitaShell](https://github.com/TheOfficialFloW/VitaShell)
+- [VitaSDK](https://github.com/vitasdk)
 
 ## Credits
 
-### Original VitaShell Credits
-* **Original Author**: TheFloW - Creator of VitaShell
-* Team Molecule for HENkaku
-* xerpi for ftpvitalib and vita2dlib
-* wololo for the Revitalize contest
-* sakya for Lightmp3
-* Everybody who contributed on vitasdk
+VitaShell was created by [TheFloW](https://github.com/TheOfficialFloW). Thanks to Team Molecule, xerpi, wololo, sakya, the VitaSDK community, and everyone who has contributed code, translations, testing, and themes.
 
-### Version 2.16 Unofficial Credits (Modified by theheroGAC)
-* **Mod Developer**: theheroGAC - Complete touch screen implementation and multilingual enhancements
-* **Touch Screen Implementation**: Full front touch panel support with advanced features
-* **Enhanced Features**:
-  - Complete touch navigation system
-  - Smooth touch scrolling with momentum
-  - Double tap functionality for direct opening
-  - Context menu accessible via touch
-  - Touch settings toggle in main menu
-  - Precise touch-to-element mapping
-  - Performance optimized touch handling
+This unofficial line includes work by theheroGAC, TheRealYoti, isage, chronoss09, yyoossk, and other community contributors.
 
-### Special Thanks
-* **Core Contributors**:
-  - TheRealYoti - Major code contributions and improvements
-  - isage - QR code scanner fix only
-* **Language Contributors**:
-  - chronoss09 - Complete French localization
-  - yyoossk - Enhanced Japanese translation
-  - theheroGAC - Complete Italian localization and touch features
-* **Beta Testers**: Community members who helped test and improve the touch functionality
-* **Open Source Community**: Thanks to all contributors and the VitaSDK team
+## License
 
-### Version 2.16 Features Summary
-This unofficial build focuses on modern touch interface implementation while maintaining full compatibility with existing VitaShell functionality. The touch system is designed to provide an intuitive and responsive experience for PS Vita users who prefer touch navigation.
-
-**⚠️ Disclaimer**: This is an unofficial modification. Use at your own risk and always backup your data before installing custom homebrew applications.
+See [LICENSE](LICENSE).
