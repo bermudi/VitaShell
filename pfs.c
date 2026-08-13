@@ -18,6 +18,7 @@
 
 #include "main.h"
 #include "pfs.h"
+#include "utils.h"
 
 /*
   SceAppMgr mount IDs:
@@ -81,12 +82,16 @@ int pfsMount(const char *path) {
     args.id = known_pfs_ids[i];
 
     res = shellUserMountById(&args);
+    debugPrintf("PFS mount: shellUserMountById(path=%s, id=0x%X) returned 0x%08X\n",
+                path, args.id, res);
     if (res >= 0)
       return res;
   }
 
   read_only = 1;
-  return sceAppMgrGameDataMount(path, 0, 0, pfs_mount_point);
+  res = sceAppMgrGameDataMount(path, 0, 0, pfs_mount_point);
+  debugPrintf("PFS mount: sceAppMgrGameDataMount(path=%s) returned 0x%08X\n", path, res);
+  return res;
 }
 
 int pfsUmount() {
