@@ -1,13 +1,14 @@
 #include "pfs_core.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ARRAY_SIZE(values) (sizeof(values) / sizeof((values)[0]))
 #define CHECK(condition) do { \
   if (!(condition)) { \
     fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition); \
-    return 1; \
+    exit(1); \
   } \
 } while (0)
 
