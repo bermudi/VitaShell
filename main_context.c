@@ -446,7 +446,7 @@ void setContextMenuMainVisibilities() {
     menu_main_entries[MENU_MAIN_ENTRY_OPEN_DECRYPTED].visibility = CTX_INVISIBLE;
   } else {
     char path[MAX_PATH_LENGTH];
-    snprintf(path, MAX_PATH_LENGTH, "%s%ssce_pfs", file_list.path, file_entry->name);
+    snprintf(path, MAX_PATH_LENGTH, "%s%s/sce_pfs", file_list.path, file_entry->name);
 
     if (!checkFolderExist(path))
       menu_main_entries[MENU_MAIN_ENTRY_OPEN_DECRYPTED].visibility = CTX_INVISIBLE;
@@ -883,9 +883,6 @@ static int contextMenuMainEnterCallback(int sel, void *context) {
             }
           }
         }
-
-        if (res < 0)
-          errorDialog(res);
 
         if (res >= 0) {
           addEndSlash(file_list.path);
