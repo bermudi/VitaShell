@@ -18,6 +18,7 @@
 
 #include "main.h"
 #include "pfs.h"
+#include "pfs_core.h"
 #include "utils.h"
 
 /*
@@ -46,52 +47,62 @@ char pfs_mounted_path[MAX_PATH_LENGTH];
 char pfs_mount_point[MAX_MOUNT_POINT_LENGTH];
 int read_only;
 
-int known_pfs_ids[] = {
-  0x6E,
-  0x12E,
-  0x12F,
-  0x3ED,
-};
+typedef struct {
+  ShellMountIdArgs args;
+  char klicensee[0x10];
+} PfsMountContext;
+
+static int mountById(void *context, const char *path, int id) {
+  PfsMountContext *mount_context = context;
+  mount_context->args.path = path;
+  mount_context->args.id = id;
+  return shellUserMountById(&mount_context->args);
+}
+
+static int mountGameData(void *context, const char *path) {
+  (void)context;
+  return sceAppMgrGameDataMount(path, 0, 0, pfs_mount_point);
+}
+
+static void logMountAttempt(void *context, const PfsAttempt *attempt) {
+  (void)context;
+  char message[MAX_PATH_LENGTH + 128];
+  pfsFormatAttempt(message, sizeof(message), attempt);
+  debugPrintf("%s", message);
+}
 
 int pfsMount(const char *path) {
-  int res;
-  char work_path[MAX_PATH_LENGTH];
-  char klicensee[0x10];
-  char license_buf[0x200];
-  ShellMountIdArgs args;
-
-  memset(klicensee, 0, sizeof(klicensee));
+  PfsMountContext context;
+  memset(&context, 0, sizeof(context));
 
 /*
+  char work_path[MAX_PATH_LENGTH];
+  char license_buf[0x200];
   snprintf(work_path, MAX_PATH_LENGTH, "%ssce_sys/package/work.bin", path);
   if (ReadFile(work_path, license_buf, sizeof(license_buf)) == sizeof(license_buf)) {
-    int res = shellUserGetRifVitaKey(license_buf, klicensee);
+    int res = shellUserGetRifVitaKey(license_buf, context.klicensee);
     debugPrintf("read license: 0x%08X\n", res);
   }
 */
-  args.process_titleid = VITASHELL_TITLEID;
-  args.path = path;
-  args.desired_mount_point = NULL;
-  args.klicensee = klicensee;
-  args.mount_point = pfs_mount_point;
+  context.args.process_titleid = VITASHELL_TITLEID;
+  context.args.desired_mount_point = NULL;
+  context.args.klicensee = context.klicensee;
+  context.args.mount_point = pfs_mount_point;
 
-  read_only = 0;
+  PfsMountOps ops = {
+    &context,
+    mountById,
+    mountGameData,
+    logMountAttempt,
+  };
+  return pfsMountSequence(path, &ops, &read_only);
+}
 
-  int i;
-  for (i = 0; i < sizeof(known_pfs_ids) / sizeof(int); i++) {
-    args.id = known_pfs_ids[i];
+int pfsUmountIfMounted() {
+  if (pfs_mount_point[0] == 0)
+    return 0;
 
-    res = shellUserMountById(&args);
-    debugPrintf("PFS mount: shellUserMountById(path=%s, id=0x%X) returned 0x%08X\n",
-                path, args.id, res);
-    if (res >= 0)
-      return res;
-  }
-
-  read_only = 1;
-  res = sceAppMgrGameDataMount(path, 0, 0, pfs_mount_point);
-  debugPrintf("PFS mount: sceAppMgrGameDataMount(path=%s) returned 0x%08X\n", path, res);
-  return res;
+  return pfsUmount();
 }
 
 int pfsUmount() {

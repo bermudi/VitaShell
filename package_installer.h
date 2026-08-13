@@ -30,6 +30,13 @@ typedef struct {
   char *file;
 } InstallArguments;
 
+typedef struct {
+  int error;
+  int committed;
+} PromoteAppResult;
+
+PromoteAppResult promoteAppWithStatus(const char *path);
+PromoteAppResult promoteCmaWithStatus(const char *path, const char *titleid, int type);
 int promoteApp(const char *path);
 int promoteCma(const char *path, const char *titleid, int type);
 int promotePsp(const char *path);

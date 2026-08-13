@@ -30,6 +30,7 @@
 #include "utils.h"
 #include "usb.h"
 #include "pfs.h"
+#include "pfs_core.h"
 
 // External variables from main.c
 extern char last_installed_titleid[12];
@@ -446,9 +447,8 @@ void setContextMenuMainVisibilities() {
     menu_main_entries[MENU_MAIN_ENTRY_OPEN_DECRYPTED].visibility = CTX_INVISIBLE;
   } else {
     char path[MAX_PATH_LENGTH];
-    snprintf(path, MAX_PATH_LENGTH, "%s%s/sce_pfs", file_list.path, file_entry->name);
-
-    if (!checkFolderExist(path))
+    if (pfsBuildScePfsPath(path, sizeof(path), file_list.path, file_entry->name) < 0 ||
+        !checkFolderExist(path))
       menu_main_entries[MENU_MAIN_ENTRY_OPEN_DECRYPTED].visibility = CTX_INVISIBLE;
   }
 
@@ -855,6 +855,11 @@ static int contextMenuHomeEnterCallback(int sel, void *context) {
   return CONTEXT_MENU_CLOSING;
 }
 
+static int mountPfsPath(void *context, const char *path) {
+  (void)context;
+  return pfsMount(path);
+}
+
 static int contextMenuMainEnterCallback(int sel, void *context) {
   switch (sel) {
 
@@ -865,28 +870,17 @@ static int contextMenuMainEnterCallback(int sel, void *context) {
         char path[MAX_PATH_LENGTH];
         int res;
 
-        pfsUmount();
-
-        snprintf(path, MAX_PATH_LENGTH, "%s%s", file_list.path, file_entry->name);
-        res = pfsMount(path);
-
-        // In case we're at ux0:patch or grw0:patch we need to apply the mounting at ux0:app or gro0:app
+        res = pfsUmountIfMounted();
         if (res < 0) {
-          if (strncasecmp(file_list.path, "ux0:patch", 9) == 0 ||
-              strncasecmp(file_list.path, "grw0:patch", 10) == 0) {
-            snprintf(path, MAX_PATH_LENGTH, "ux0:app/%s", file_entry->name);
-            res = pfsMount(path);
-
-            if (res < 0) {
-              snprintf(path, MAX_PATH_LENGTH, "gro0:app/%s", file_entry->name);
-              res = pfsMount(path);
-            }
-          }
+          errorDialog(res);
+          break;
         }
 
+        res = pfsMountBrowserEntry(file_list.path, file_entry->name,
+                                   mountPfsPath, NULL, path, sizeof(path));
+
         if (res >= 0) {
-          addEndSlash(file_list.path);
-          strcat(file_list.path, file_entry->name);
+          snprintf(file_list.path, MAX_PATH_LENGTH, "%s/", path);
           strcpy(pfs_mounted_path, file_list.path);
           dirLevelUp();
 

@@ -60,8 +60,8 @@ static int unloadScePaf() {
     );
 }
 
-int promoteCma(const char *path, const char *titleid, int type) {
-  int res;
+PromoteAppResult promoteCmaWithStatus(const char *path, const char *titleid, int type) {
+  PromoteAppResult result = { 0, 0 };
   
   ScePromoterUtilityImportParams promoteArgs;
   memset(&promoteArgs,0x00,sizeof(ScePromoterUtilityImportParams));
@@ -70,69 +70,75 @@ int promoteCma(const char *path, const char *titleid, int type) {
   promoteArgs.type = type;
   promoteArgs.attribute = 0x1;
 
-  res = loadScePaf();
-  if (res < 0)
-    return res;
+  result.error = loadScePaf();
+  if (result.error < 0)
+    return result;
 
-  res = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
+  result.error = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
 
-  res = scePromoterUtilityInit();
-  if (res < 0)
-    return res;
+  result.error = scePromoterUtilityInit();
+  if (result.error < 0)
+    return result;
 
-  res = scePromoterUtilityPromoteImport(&promoteArgs);
-  if (res < 0)
-    return res;
+  result.error = scePromoterUtilityPromoteImport(&promoteArgs);
+  if (result.error < 0)
+    return result;
 
-  res = scePromoterUtilityExit();
-  if (res < 0)
-    return res;
+  result.committed = 1;
 
-  res = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
+  result.error = scePromoterUtilityExit();
+  if (result.error < 0)
+    return result;
 
-  res = unloadScePaf();
-  if (res < 0)
-    return res;
+  result.error = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
 
-  return res;
+  result.error = unloadScePaf();
+  return result;
+}
+
+int promoteCma(const char *path, const char *titleid, int type) {
+  return promoteCmaWithStatus(path, titleid, type).error;
+}
+
+PromoteAppResult promoteAppWithStatus(const char *path) {
+  PromoteAppResult result = { 0, 0 };
+
+  result.error = loadScePaf();
+  if (result.error < 0)
+    return result;
+
+  result.error = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
+
+  result.error = scePromoterUtilityInit();
+  if (result.error < 0)
+    return result;
+
+  result.error = scePromoterUtilityPromotePkgWithRif(path, 1);
+  if (result.error < 0)
+    return result;
+
+  result.committed = 1;
+
+  result.error = scePromoterUtilityExit();
+  if (result.error < 0)
+    return result;
+
+  result.error = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
+
+  result.error = unloadScePaf();
+  return result;
 }
 
 int promoteApp(const char *path) {
-  int res;
-
-  res = loadScePaf();
-  if (res < 0)
-    return res;
-
-  res = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
-
-  res = scePromoterUtilityInit();
-  if (res < 0)
-    return res;
-
-  res = scePromoterUtilityPromotePkgWithRif(path, 1);
-  if (res < 0)
-    return res;
-
-  res = scePromoterUtilityExit();
-  if (res < 0)
-    return res;
-
-  res = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
-
-  res = unloadScePaf();
-  if (res < 0)
-    return res;
-
-  return res;
+  return promoteAppWithStatus(path).error;
 }
 
 int deleteApp(const char *titleid) {
@@ -339,10 +345,11 @@ int installPackage(const char *file) {
   if (res < 0)
     return res;
 
-  // Promote app
-  res = promoteApp(PACKAGE_DIR);
-  if (res < 0)
-    return res;
+  // Promote app. A teardown error after commit is still returned so callers
+  // can report it, but the package itself has already installed.
+  PromoteAppResult promotion = promoteAppWithStatus(PACKAGE_DIR);
+  if (promotion.error < 0)
+    return promotion.error;
 
   return 0;
 }
@@ -529,12 +536,18 @@ int install_thread(SceSize args_size, InstallArguments *args) {
   }
 
   // Promote app
-  res = promoteApp(PACKAGE_DIR);
-  if (res < 0) {
+  PromoteAppResult promotion = promoteAppWithStatus(PACKAGE_DIR);
+  if (promotion.error < 0) {
     closeWaitDialog();
-    errorDialog(res);
-    // If failed, move package folder back
-    if (isFolder) sceIoRename(PACKAGE_DIR, args->file);
+    errorDialog(promotion.error);
+    // Restore only when promotion did not commit. The package manager may
+    // already have consumed PACKAGE_DIR after a committed installation.
+    if (isFolder && !promotion.committed) {
+      int restore_res = sceIoRename(PACKAGE_DIR, args->file);
+      if (restore_res < 0)
+        debugPrintf("Package install: restore failed for %s: 0x%08X\n",
+                    args->file, restore_res);
+    }
     goto EXIT;
   }
 
