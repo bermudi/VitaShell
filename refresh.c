@@ -557,16 +557,11 @@ void dlc_callback_outer(void* data, const char* dir, const char* subdir) {
     // Now that the dlc we need are out of addcont/title_id, refresh them.
     // If one restore fails, restore every remaining staged DLC instead of
     // promoting or deleting anything else.
+    refreshRestoreOrPromoteDlc(&refresh_data->results, dlc_data.list,
+                               dlc_data.list_size, DLC_TEMP, &refresh_ops,
+                               &dlc_operations);
     for (int i = 0; i < dlc_data.list_size; i++) {
       if (dlc_data.list[i] != NULL) {
-        snprintf(path, MAX_PATH_LENGTH, DLC_TEMP "/%s", &dlc_data.list[i][len + 1]);
-        if (refresh_data->results.restore_error < 0) {
-          int restore_res = sceIoRename(path, dlc_data.list[i]);
-          recordRefreshError(refresh_data, restore_res, "DLC recovery rename", path);
-        } else {
-          refreshPromoteStaged(&refresh_data->results, dlc_data.list[i], path,
-                               &refresh_ops, &dlc_operations);
-        }
         SetProgress(++refresh_data->processed, refresh_data->count);
         free(dlc_data.list[i]);
       }

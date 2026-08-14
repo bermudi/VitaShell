@@ -4,6 +4,9 @@
 
 #include "refresh_core.h"
 
+#include <stdio.h>
+#include <string.h>
+
 static void reportError(const RefreshTransactionOps *ops, int error,
                         const char *operation, const char *path) {
   if (error < 0 && ops->report_error != NULL)
@@ -147,4 +150,40 @@ int refreshWriteWorkBin(
   }
 
   return error;
+}
+
+int refreshRestoreOrPromoteDlc(
+    RefreshResults *results,
+    char **sources,
+    int count,
+    const char *staging_prefix,
+    const RefreshTransactionOps *ops,
+    const RefreshOperationNames *names) {
+  for (int i = 0; i < count; i++) {
+    if (sources[i] == NULL)
+      continue;
+
+    const char *base = strrchr(sources[i], '/');
+    base = base ? base + 1 : sources[i];
+
+    char staging[REFRESH_PATH_MAX];
+    int written = snprintf(staging, sizeof(staging), "%s/%s", staging_prefix, base);
+    if (written < 0 || (size_t)written >= sizeof(staging)) {
+      reportError(ops, -1, names->staging, sources[i]);
+      recordGeneralError(results, -1);
+      continue;
+    }
+
+    if (results->restore_error < 0) {
+      int restore_res = ops->rename_path(ops->context, staging, sources[i]);
+      if (restore_res < 0) {
+        reportError(ops, restore_res, names->restore, staging);
+        recordGeneralError(results, restore_res);
+      }
+    } else {
+      refreshPromoteStaged(results, sources[i], staging, ops, names);
+    }
+  }
+
+  return 0;
 }

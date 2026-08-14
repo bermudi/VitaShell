@@ -374,6 +374,159 @@ static int testWorkBinCleanupFailureIsSeparate(void) {
   return 0;
 }
 
+/* --- DLC restore-or-promote cascade tests --- */
+
+typedef struct {
+  int rename_results[8];
+  int rename_result_count;
+  int rename_calls;
+  char rename_sources[8][128];
+  char rename_destinations[8][128];
+  RefreshPromotionResult promotion_results[8];
+  int promotion_result_count;
+  int promotion_calls;
+  char promotion_paths[8][128];
+  int report_calls;
+} DlcFake;
+
+static int dlcRename(void *context, const char *source, const char *destination) {
+  DlcFake *fake = context;
+  snprintf(fake->rename_sources[fake->rename_calls],
+           sizeof(fake->rename_sources[fake->rename_calls]), "%s", source);
+  snprintf(fake->rename_destinations[fake->rename_calls],
+           sizeof(fake->rename_destinations[fake->rename_calls]), "%s", destination);
+  int result = fake->rename_calls < fake->rename_result_count
+                   ? fake->rename_results[fake->rename_calls]
+                   : 0;
+  fake->rename_calls++;
+  return result;
+}
+
+static RefreshPromotionResult dlcPromote(void *context, const char *path) {
+  DlcFake *fake = context;
+  snprintf(fake->promotion_paths[fake->promotion_calls],
+           sizeof(fake->promotion_paths[fake->promotion_calls]), "%s", path);
+  RefreshPromotionResult result =
+      fake->promotion_calls < fake->promotion_result_count
+          ? fake->promotion_results[fake->promotion_calls]
+          : (RefreshPromotionResult){ 0, 0, 0 };
+  fake->promotion_calls++;
+  return result;
+}
+
+static void dlcReport(void *context, int error, const char *operation,
+                      const char *path) {
+  (void)context; (void)error; (void)operation; (void)path;
+  ((DlcFake *)context)->report_calls++;
+}
+
+static RefreshTransactionOps dlcOps(DlcFake *fake) {
+  RefreshTransactionOps ops = { fake, dlcRename, dlcPromote, dlcReport };
+  return ops;
+}
+
+static int testDlcAllPromoted(void) {
+  char *sources[] = { "ux0:addcont/TITLE/PCSG00001",
+                      "ux0:addcont/TITLE/PCSG00002",
+                      "ux0:addcont/TITLE/PCSG00003" };
+  DlcFake fake = { .promotion_results = { { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 } },
+                   .promotion_result_count = 3 };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = dlcOps(&fake);
+
+  refreshRestoreOrPromoteDlc(&results, sources, 3, "ux0:temp/addcont", &ops,
+                             &operation_names);
+  CHECK(fake.promotion_calls == 3);
+  CHECK(fake.rename_calls == 0);
+  CHECK(results.refreshed == 3);
+  CHECK(strcmp(fake.promotion_paths[0], "ux0:temp/addcont/PCSG00001") == 0);
+  CHECK(strcmp(fake.promotion_paths[1], "ux0:temp/addcont/PCSG00002") == 0);
+  CHECK(strcmp(fake.promotion_paths[2], "ux0:temp/addcont/PCSG00003") == 0);
+  return 0;
+}
+
+static int testDlcPreExistingRestoreErrorTriggersRecovery(void) {
+  char *sources[] = { "ux0:addcont/TITLE/PCSG00001",
+                      "ux0:addcont/TITLE/PCSG00002" };
+  DlcFake fake = { 0 };
+  RefreshResults results = { .restore_error = -500 };
+  RefreshTransactionOps ops = dlcOps(&fake);
+
+  refreshRestoreOrPromoteDlc(&results, sources, 2, "ux0:temp/addcont", &ops,
+                             &operation_names);
+  CHECK(fake.promotion_calls == 0);
+  CHECK(fake.rename_calls == 2);
+  CHECK(strcmp(fake.rename_sources[0], "ux0:temp/addcont/PCSG00001") == 0);
+  CHECK(strcmp(fake.rename_destinations[0], "ux0:addcont/TITLE/PCSG00001") == 0);
+  CHECK(strcmp(fake.rename_sources[1], "ux0:temp/addcont/PCSG00002") == 0);
+  CHECK(strcmp(fake.rename_destinations[1], "ux0:addcont/TITLE/PCSG00002") == 0);
+  CHECK(results.refreshed == 0);
+  return 0;
+}
+
+static int testDlcCascadeFromPromotionRestoreFailure(void) {
+  char *sources[] = { "ux0:addcont/TITLE/PCSG00001",
+                      "ux0:addcont/TITLE/PCSG00002" };
+  DlcFake fake = {
+    .rename_results = { -104 },
+    .rename_result_count = 1,
+    .promotion_results = { { -103, 0, 0 } },
+    .promotion_result_count = 1,
+  };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = dlcOps(&fake);
+
+  refreshRestoreOrPromoteDlc(&results, sources, 2, "ux0:temp/addcont", &ops,
+                             &operation_names);
+  /* Entry 0: promoted, promotion failed (-103), restore attempted, restore
+     failed (-104) → restore_error set. Entry 1: restore_error < 0 so recovery
+     rename instead of promote. */
+  CHECK(fake.promotion_calls == 1);
+  CHECK(fake.rename_calls == 2);
+  CHECK(results.restore_error == -104);
+  CHECK(results.refreshed == 0);
+  /* Second rename is the recovery restore for entry 1. */
+  CHECK(strcmp(fake.rename_sources[1], "ux0:temp/addcont/PCSG00002") == 0);
+  CHECK(strcmp(fake.rename_destinations[1], "ux0:addcont/TITLE/PCSG00002") == 0);
+  return 0;
+}
+
+static int testDlcNullEntriesSkipped(void) {
+  char *sources[] = { NULL, "ux0:addcont/TITLE/PCSG00002", NULL };
+  DlcFake fake = { .promotion_results = { { 0, 0, 0 } },
+                   .promotion_result_count = 1 };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = dlcOps(&fake);
+
+  refreshRestoreOrPromoteDlc(&results, sources, 3, "ux0:temp/addcont", &ops,
+                             &operation_names);
+  CHECK(fake.promotion_calls == 1);
+  CHECK(fake.rename_calls == 0);
+  CHECK(results.refreshed == 1);
+  CHECK(strcmp(fake.promotion_paths[0], "ux0:temp/addcont/PCSG00002") == 0);
+  return 0;
+}
+
+static int testDlcRecoveryRenameFailureRecordsError(void) {
+  char *sources[] = { "ux0:addcont/TITLE/PCSG00001",
+                      "ux0:addcont/TITLE/PCSG00002" };
+  DlcFake fake = {
+    .rename_results = { -601, -602 },
+    .rename_result_count = 2,
+  };
+  RefreshResults results = { .restore_error = -500 };
+  RefreshTransactionOps ops = dlcOps(&fake);
+
+  refreshRestoreOrPromoteDlc(&results, sources, 2, "ux0:temp/addcont", &ops,
+                             &operation_names);
+  CHECK(fake.rename_calls == 2);
+  CHECK(fake.promotion_calls == 0);
+  CHECK(results.first_error == -601);
+  CHECK(results.restore_error == -500);
+  CHECK(fake.report_calls == 2);
+  return 0;
+}
+
 int main(void) {
   int (*tests[])(void) = {
     testStageFailureStopsPromotion,
@@ -390,6 +543,11 @@ int main(void) {
     testWorkBinCloseFailureIsVisible,
     testWorkBinRenameFailureRemovesTemporaryFile,
     testWorkBinCleanupFailureIsSeparate,
+    testDlcAllPromoted,
+    testDlcPreExistingRestoreErrorTriggersRecovery,
+    testDlcCascadeFromPromotionRestoreFailure,
+    testDlcNullEntriesSkipped,
+    testDlcRecoveryRenameFailureRecordsError,
   };
 
   for (size_t i = 0; i < ARRAY_SIZE(tests); i++) {

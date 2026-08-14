@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #define REFRESH_WORK_BIN_SIZE 512
+#define REFRESH_PATH_MAX 1024
 
 typedef struct {
   int refreshed;
@@ -103,5 +104,20 @@ int refreshWriteWorkBin(
     int short_write_error,
     const RefreshWorkBinOps *ops,
     int *cleanup_error);
+
+/*
+  Iterates a list of staged DLC source paths (NULL entries skipped) and either
+  promotes each one or, once a prior restore has failed (restore_error < 0),
+  renames every remaining entry back to its original path. The staging path for
+  each entry is built as staging_prefix + "/" + basename(source). The caller
+  retains ownership of the sources array and is responsible for freeing entries.
+*/
+int refreshRestoreOrPromoteDlc(
+    RefreshResults *results,
+    char **sources,
+    int count,
+    const char *staging_prefix,
+    const RefreshTransactionOps *ops,
+    const RefreshOperationNames *names);
 
 #endif
