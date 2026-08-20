@@ -7,7 +7,18 @@ Filed from root AGENTS.md. Read on demand when touching promotion / staging / wo
 Refresh LiveArea → scan ux0 content dirs → refreshNeeded() → stage/move
 → refreshApp() → ensure/restore work.bin → promoteApp()
 → scePromoterUtilityPromotePkgWithRif() → restore or finalize
+→ cleanupStaged(): delete the staging copy once the promoter committed
 ```
+
+The promoter **copies** its source rather than consuming it (every caller
+wipes its staging dir first — see `installPackage` and upstream VitaShell),
+so the staged directory must be deleted after a committed promotion.
+Cleanup runs only on `REFRESH_TRANSACTION_PROMOTED` and
+`REFRESH_TRANSACTION_COMMITTED_WITH_ERROR`. Never on restore paths: after a
+successful restore the staging path holds the moved-back original, and after
+a failed restore it holds the only copy. Without cleanup, the leftover blocks
+the next staging attempt at the same path (apps/patches share one temp dir)
+and every later refresh reports occupied-staging errors.
 
 Touching this path, watch: staging collisions, rename failures, promotion/restoration/cleanup failures, cancellation, scan errors, partial writes, error priority, committed vs teardown failure.
 

@@ -52,6 +52,26 @@ int refreshRestoreStaged(RefreshResults *results, const char *source,
   return restore_error;
 }
 
+/*
+  Deletes the staging copy once the promoter has committed the install. The
+  promoter copies rather than consumes its source, so without this the staged
+  directory stays behind, blocks the next staging attempt at the same path,
+  and is reported as an occupied staging directory on the next refresh.
+
+  A cleanup failure is reported and recorded but never rolls back the
+  promotion or changes the refreshed count (post-commit cleanup failure is
+  not a promotion failure). Never call this on a restore path.
+*/
+static void cleanupStaged(RefreshResults *results, const char *staging,
+                          const RefreshTransactionOps *ops,
+                          const RefreshOperationNames *names) {
+  int cleanup_error = ops->remove_path(ops->context, staging);
+  if (cleanup_error < 0) {
+    reportError(ops, cleanup_error, names->cleanup, staging);
+    recordGeneralError(results, cleanup_error);
+  }
+}
+
 RefreshTransactionResult refreshPromoteStaged(
     RefreshResults *results, const char *source, const char *staging,
     const RefreshTransactionOps *ops, const RefreshOperationNames *names) {
@@ -66,6 +86,7 @@ RefreshTransactionResult refreshPromoteStaged(
 
   if (promotion.error >= 0) {
     results->refreshed++;
+    cleanupStaged(results, staging, ops, names);
     return REFRESH_TRANSACTION_PROMOTED;
   }
 
@@ -75,6 +96,7 @@ RefreshTransactionResult refreshPromoteStaged(
   /* The package manager has committed the install. Restoring is now unsafe. */
   if (promotion.committed) {
     results->refreshed++;
+    cleanupStaged(results, staging, ops, names);
     return REFRESH_TRANSACTION_COMMITTED_WITH_ERROR;
   }
 

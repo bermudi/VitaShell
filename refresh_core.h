@@ -38,12 +38,18 @@ typedef int (*RefreshRenameFn)(void *context, const char *source, const char *de
 typedef RefreshPromotionResult (*RefreshPromoteFn)(void *context, const char *path);
 typedef void (*RefreshErrorFn)(void *context, int error, const char *operation,
                                const char *path);
+typedef int (*RefreshRemovePathFn)(void *context, const char *path);
 
 typedef struct {
   void *context;
   RefreshRenameFn rename_path;
   RefreshPromoteFn promote;
   RefreshErrorFn report_error;
+  /* Invoked only after the promoter has committed (promotion success or
+     committed-with-error) to delete the staging copy. Never called on
+     restore paths: after a restore the staging path no longer holds a
+     disposable copy, and after a failed restore it holds the only copy. */
+  RefreshRemovePathFn remove_path;
 } RefreshTransactionOps;
 
 typedef struct {
@@ -51,6 +57,7 @@ typedef struct {
   const char *promotion;
   const char *restore;
   const char *work_bin;
+  const char *cleanup;
 } RefreshOperationNames;
 
 int refreshReportedError(const RefreshResults *results);

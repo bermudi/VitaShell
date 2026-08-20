@@ -427,11 +427,17 @@ static void logRefreshError(void *context, int error, const char *operation,
   debugPrintf("Refresh LiveArea: %s failed for %s: 0x%08X\n", operation, path, error);
 }
 
+static int removeRefreshPath(void *context, const char *path) {
+  (void)context;
+  return removePath(path, NULL);
+}
+
 static const RefreshTransactionOps refresh_ops = {
   NULL,
   renameRefreshPath,
   promoteRefreshPath,
   logRefreshError,
+  removeRefreshPath,
 };
 
 static const RefreshOperationNames app_operations = {
@@ -439,6 +445,7 @@ static const RefreshOperationNames app_operations = {
   "promotion",
   "restore rename",
   "work.bin preparation",
+  "staging cleanup",
 };
 
 static const RefreshOperationNames dlc_operations = {
@@ -446,6 +453,7 @@ static const RefreshOperationNames dlc_operations = {
   "DLC promotion",
   "DLC restore rename",
   "DLC work.bin preparation",
+  "DLC staging cleanup",
 };
 
 static void stageAndRefresh(refresh_data_t *refresh_data, const char *source,

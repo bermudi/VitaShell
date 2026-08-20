@@ -20,6 +20,10 @@ typedef struct {
   RefreshPromotionResult promotion;
   int promotion_calls;
   int report_calls;
+  int remove_results[4];
+  int remove_result_count;
+  int remove_calls;
+  char remove_paths[4][64];
 } TransactionFake;
 
 static int fakeRename(void *context, const char *source, const char *destination) {
@@ -52,12 +56,23 @@ static void fakeReport(void *context, int error, const char *operation,
     fake->report_calls++;
 }
 
+static int fakeRemoveStaging(void *context, const char *path) {
+  TransactionFake *fake = context;
+  snprintf(fake->remove_paths[fake->remove_calls],
+           sizeof(fake->remove_paths[fake->remove_calls]), "%s", path);
+  int result = fake->remove_calls < fake->remove_result_count
+                   ? fake->remove_results[fake->remove_calls]
+                   : 0;
+  fake->remove_calls++;
+  return result;
+}
+
 static const RefreshOperationNames operation_names = {
-  "stage", "promote", "restore", "work.bin"
+  "stage", "promote", "restore", "work.bin", "cleanup"
 };
 
 static RefreshTransactionOps transactionOps(TransactionFake *fake) {
-  RefreshTransactionOps ops = { fake, fakeRename, fakePromote, fakeReport };
+  RefreshTransactionOps ops = { fake, fakeRename, fakePromote, fakeReport, fakeRemoveStaging };
   return ops;
 }
 
@@ -88,6 +103,48 @@ static int testPromotionSuccess(void) {
   CHECK(strcmp(fake.rename_destinations[0], "stage") == 0);
   CHECK(results.refreshed == 1);
   CHECK(results.first_work_bin_error == -102);
+  CHECK(fake.remove_calls == 1);
+  CHECK(strcmp(fake.remove_paths[0], "stage") == 0);
+  return 0;
+}
+
+static int testStagingReusedAfterCleanup(void) {
+  TransactionFake fake = { .promotion = { 0, 0, 0 } };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = transactionOps(&fake);
+
+  /* Two entries staging through the same path (apps/patches reuse one temp
+     dir): without cleanup between promotions the second staging rename
+     collides with the leftover copy. */
+  CHECK(refreshStageAndPromote(&results, "one", "stage", &ops,
+                               &operation_names) == REFRESH_TRANSACTION_PROMOTED);
+  CHECK(refreshStageAndPromote(&results, "two", "stage", &ops,
+                               &operation_names) == REFRESH_TRANSACTION_PROMOTED);
+  CHECK(fake.rename_calls == 2);
+  CHECK(fake.promotion_calls == 2);
+  CHECK(fake.remove_calls == 2);
+  CHECK(strcmp(fake.remove_paths[0], "stage") == 0);
+  CHECK(strcmp(fake.remove_paths[1], "stage") == 0);
+  CHECK(results.refreshed == 2);
+  return 0;
+}
+
+static int testCleanupFailureKeepsSuccessCounted(void) {
+  TransactionFake fake = {
+    .promotion = { 0, 0, 0 },
+    .remove_results = { -107 },
+    .remove_result_count = 1,
+  };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = transactionOps(&fake);
+
+  CHECK(refreshStageAndPromote(&results, "source", "stage", &ops,
+                               &operation_names) == REFRESH_TRANSACTION_PROMOTED);
+  CHECK(fake.rename_calls == 1);
+  CHECK(fake.remove_calls == 1);
+  CHECK(results.refreshed == 1);
+  CHECK(results.first_error == -107);
+  CHECK(refreshReportedError(&results) == -107);
   return 0;
 }
 
@@ -107,6 +164,8 @@ static int testPromotionFailureRestores(void) {
   CHECK(strcmp(fake.rename_destinations[1], "source") == 0);
   CHECK(results.first_promotion_error == -103);
   CHECK(results.restore_error == 0);
+  /* The restore moved the data back; the staging path must not be deleted. */
+  CHECK(fake.remove_calls == 0);
   return 0;
 }
 
@@ -127,6 +186,8 @@ static int testRestoreFailureBlocksReuse(void) {
   CHECK(fake.rename_calls == 2);
   CHECK(fake.promotion_calls == 1);
   CHECK(refreshReportedError(&results) == -104);
+  /* Staging now holds the only copy of the user's data. Never delete it. */
+  CHECK(fake.remove_calls == 0);
   return 0;
 }
 
@@ -143,6 +204,7 @@ static int testPostCommitCleanupFailureDoesNotRestore(void) {
   CHECK(fake.rename_calls == 1);
   CHECK(results.refreshed == 1);
   CHECK(results.first_promotion_error == -105);
+  CHECK(fake.remove_calls == 1);
   return 0;
 }
 
@@ -160,6 +222,7 @@ static int testPreStagedDlcDoesNotStageAgain(void) {
   CHECK(fake.rename_calls == 1);
   CHECK(strcmp(fake.rename_sources[0], "stage") == 0);
   CHECK(strcmp(fake.rename_destinations[0], "original") == 0);
+  CHECK(fake.remove_calls == 0);
   return 0;
 }
 
@@ -387,6 +450,10 @@ typedef struct {
   int promotion_calls;
   char promotion_paths[8][128];
   int report_calls;
+  int remove_results[8];
+  int remove_result_count;
+  int remove_calls;
+  char remove_paths[8][128];
 } DlcFake;
 
 static int dlcRename(void *context, const char *source, const char *destination) {
@@ -416,12 +483,23 @@ static RefreshPromotionResult dlcPromote(void *context, const char *path) {
 
 static void dlcReport(void *context, int error, const char *operation,
                       const char *path) {
-  (void)context; (void)error; (void)operation; (void)path;
+  (void)error; (void)operation; (void)path;
   ((DlcFake *)context)->report_calls++;
 }
 
+static int dlcRemove(void *context, const char *path) {
+  DlcFake *fake = context;
+  snprintf(fake->remove_paths[fake->remove_calls],
+           sizeof(fake->remove_paths[fake->remove_calls]), "%s", path);
+  int result = fake->remove_calls < fake->remove_result_count
+                   ? fake->remove_results[fake->remove_calls]
+                   : 0;
+  fake->remove_calls++;
+  return result;
+}
+
 static RefreshTransactionOps dlcOps(DlcFake *fake) {
-  RefreshTransactionOps ops = { fake, dlcRename, dlcPromote, dlcReport };
+  RefreshTransactionOps ops = { fake, dlcRename, dlcPromote, dlcReport, dlcRemove };
   return ops;
 }
 
@@ -442,6 +520,9 @@ static int testDlcAllPromoted(void) {
   CHECK(strcmp(fake.promotion_paths[0], "ux0:temp/addcont/PCSG00001") == 0);
   CHECK(strcmp(fake.promotion_paths[1], "ux0:temp/addcont/PCSG00002") == 0);
   CHECK(strcmp(fake.promotion_paths[2], "ux0:temp/addcont/PCSG00003") == 0);
+  CHECK(fake.remove_calls == 3);
+  CHECK(strcmp(fake.remove_paths[0], "ux0:temp/addcont/PCSG00001") == 0);
+  CHECK(strcmp(fake.remove_paths[2], "ux0:temp/addcont/PCSG00003") == 0);
   return 0;
 }
 
@@ -461,6 +542,7 @@ static int testDlcPreExistingRestoreErrorTriggersRecovery(void) {
   CHECK(strcmp(fake.rename_sources[1], "ux0:temp/addcont/PCSG00002") == 0);
   CHECK(strcmp(fake.rename_destinations[1], "ux0:addcont/TITLE/PCSG00002") == 0);
   CHECK(results.refreshed == 0);
+  CHECK(fake.remove_calls == 0);
   return 0;
 }
 
@@ -488,6 +570,8 @@ static int testDlcCascadeFromPromotionRestoreFailure(void) {
   /* Second rename is the recovery restore for entry 1. */
   CHECK(strcmp(fake.rename_sources[1], "ux0:temp/addcont/PCSG00002") == 0);
   CHECK(strcmp(fake.rename_destinations[1], "ux0:addcont/TITLE/PCSG00002") == 0);
+  /* Nothing was committed, so nothing may be deleted. */
+  CHECK(fake.remove_calls == 0);
   return 0;
 }
 
@@ -504,6 +588,8 @@ static int testDlcNullEntriesSkipped(void) {
   CHECK(fake.rename_calls == 0);
   CHECK(results.refreshed == 1);
   CHECK(strcmp(fake.promotion_paths[0], "ux0:temp/addcont/PCSG00002") == 0);
+  CHECK(fake.remove_calls == 1);
+  CHECK(strcmp(fake.remove_paths[0], "ux0:temp/addcont/PCSG00002") == 0);
   return 0;
 }
 
@@ -524,6 +610,7 @@ static int testDlcRecoveryRenameFailureRecordsError(void) {
   CHECK(results.first_error == -601);
   CHECK(results.restore_error == -500);
   CHECK(fake.report_calls == 2);
+  CHECK(fake.remove_calls == 0);
   return 0;
 }
 
@@ -531,6 +618,8 @@ int main(void) {
   int (*tests[])(void) = {
     testStageFailureStopsPromotion,
     testPromotionSuccess,
+    testStagingReusedAfterCleanup,
+    testCleanupFailureKeepsSuccessCounted,
     testPromotionFailureRestores,
     testRestoreFailureBlocksReuse,
     testPostCommitCleanupFailureDoesNotRestore,
