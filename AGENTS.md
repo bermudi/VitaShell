@@ -65,3 +65,4 @@ Done means you can state: what bug/failure mode it addresses, what source eviden
 - `docs/agent-context/refresh.md` — staging state machine, work.bin rules, NoNpDrm note
 - `docs/agent-context/pfs.md` — mount order, diagnostics, klicensee warning
 - `docs/agent-context/testing.md` — fixtures, fault injection, hardware rules
+- `docs/agent-context/reference-lineage.md` — fork lineage: RealYoti = older theheroGAC snapshot, henkaku unrelated, dev = theheroGAC fork; refresh/pfs/rif origin
