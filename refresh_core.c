@@ -27,6 +27,30 @@ static void recordPromotion(RefreshResults *results,
     results->first_promotion_error = promotion->error;
 }
 
+int refreshParsePsmContentId(
+    const uint8_t *data,
+    size_t size,
+    char title_id[10],
+    char content_id[49]) {
+  if (data == NULL || size != 48 || title_id == NULL)
+    return -1;
+
+  for (size_t i = 7; i < 16; i++) {
+    if (!((data[i] >= 'A' && data[i] <= 'Z') ||
+          (data[i] >= '0' && data[i] <= '9')))
+      return -1;
+  }
+
+  memcpy(title_id, data + 7, 9);
+  title_id[9] = '\0';
+
+  if (content_id != NULL) {
+    memcpy(content_id, data, 48);
+    content_id[48] = '\0';
+  }
+  return 0;
+}
+
 int refreshReportedError(const RefreshResults *results) {
   if (results->restore_error < 0)
     return results->restore_error;

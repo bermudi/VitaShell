@@ -76,6 +76,45 @@ static RefreshTransactionOps transactionOps(TransactionFake *fake) {
   return ops;
 }
 
+static int testPsmContentIdParsing(void) {
+  uint8_t content_id[48] = "ABCD123PCSG00001_00-ABCDEFGHIJKLMNOP";
+  char title_id[10] = { 0 };
+  char copied_content_id[49] = { 0 };
+
+  CHECK(refreshParsePsmContentId(content_id, sizeof(content_id), title_id,
+                                 copied_content_id) == 0);
+  CHECK(strcmp(title_id, "PCSG00001") == 0);
+  CHECK(memcmp(copied_content_id, content_id, sizeof(content_id)) == 0);
+  CHECK(copied_content_id[48] == '\0');
+  return 0;
+}
+
+static int testPsmContentIdRejectsMalformedInput(void) {
+  uint8_t content_id[48] = { 0 };
+  char title_id[10] = { 0 };
+
+  CHECK(refreshParsePsmContentId(content_id, 47, title_id, NULL) < 0);
+  CHECK(refreshParsePsmContentId(NULL, sizeof(content_id), title_id, NULL) < 0);
+  CHECK(refreshParsePsmContentId(content_id, sizeof(content_id), NULL, NULL) < 0);
+
+  memcpy(content_id + 7, "PCSG00001", 9);
+  content_id[7] = 'p';
+  CHECK(refreshParsePsmContentId(content_id, sizeof(content_id), title_id,
+                                 NULL) < 0);
+  content_id[7] = '.';
+  content_id[8] = '.';
+  CHECK(refreshParsePsmContentId(content_id, sizeof(content_id), title_id,
+                                 NULL) < 0);
+  memcpy(content_id + 7, "PC/000001", 9);
+  CHECK(refreshParsePsmContentId(content_id, sizeof(content_id), title_id,
+                                 NULL) < 0);
+  memcpy(content_id + 7, "PCSG00001", 9);
+  content_id[11] = '\0';
+  CHECK(refreshParsePsmContentId(content_id, sizeof(content_id), title_id,
+                                 NULL) < 0);
+  return 0;
+}
+
 static int testStageFailureStopsPromotion(void) {
   TransactionFake fake = { .rename_results = { -101 }, .rename_result_count = 1 };
   RefreshResults results = { 0 };
@@ -616,6 +655,8 @@ static int testDlcRecoveryRenameFailureRecordsError(void) {
 
 int main(void) {
   int (*tests[])(void) = {
+    testPsmContentIdParsing,
+    testPsmContentIdRejectsMalformedInput,
     testStageFailureStopsPromotion,
     testPromotionSuccess,
     testStagingReusedAfterCleanup,

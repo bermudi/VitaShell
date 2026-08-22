@@ -62,6 +62,17 @@ typedef struct {
 
 int refreshReportedError(const RefreshResults *results);
 
+/*
+  PSM content_id files are exactly 48 bytes. Extracts the nine-byte title ID
+  beginning at offset seven and optionally a NUL-terminated content ID.
+  Returns 0 on success and -1 for malformed input.
+*/
+int refreshParsePsmContentId(
+    const uint8_t *data,
+    size_t size,
+    char title_id[10],
+    char content_id[49]);
+
 RefreshTransactionResult refreshStageAndPromote(
     RefreshResults *results,
     const char *source,

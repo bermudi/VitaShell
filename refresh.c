@@ -59,12 +59,16 @@ int isCustomHomebrew(const char* path) {
   return 1;
 }
 
-int refreshNeeded(const char *app_path, const char* content_type) {
+int refreshNeeded(const char *app_path, const char* content_type,
+                  int *eligibility_error) {
   char appmeta_path[MAX_PATH_LENGTH];
   char appmeta_param[MAX_PATH_LENGTH];
   char sfo_path[MAX_PATH_LENGTH];
   int mounted_appmeta;
   char titleid[12], contentid[50], appver[8];
+
+  if (eligibility_error != NULL)
+    *eligibility_error = 0;
   
   if(strcmp(content_type,"psm") == 0) 
   {
@@ -80,14 +84,19 @@ int refreshNeeded(const char *app_path, const char* content_type) {
     
     // Get content id
     int contentid_size = allocateReadFile(contentid_path, &cidFile);
-    if(contentid_size != 48) //Check if valid contentid file
+    if (contentid_size < 0) {
+      free(cidFile);
+      if (eligibility_error != NULL)
+        *eligibility_error = contentid_size;
       return 0;
-  
-    // Get title id from content id
-    strncpy(titleid,cidFile+7,9);
-    strncpy(contentid,cidFile,49);
-    
-    
+    }
+    if (refreshParsePsmContentId(cidFile, (size_t)contentid_size, titleid,
+                                 contentid) < 0) {
+      free(cidFile);
+      if (eligibility_error != NULL)
+        *eligibility_error = VITASHELL_ERROR_INVALID_TITLEID;
+      return 0;
+    }
     free(cidFile);
   }
   else if(strcmp(content_type, "psp") == 0) {
@@ -476,7 +485,7 @@ void app_callback(void* data, const char* dir, const char* subdir) {
     }
 
     snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-    if (refreshNeeded(path, "app")) {
+    if (refreshNeeded(path, "app", NULL)) {
       // Move the directory to temp for installation
       if (checkFolderExist(APP_TEMP))
         recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
@@ -538,7 +547,7 @@ void dlc_callback_outer(void* data, const char* dir, const char* subdir) {
     // 1. Move all dlc that require refresh out of addcont/title_id
     // 2. Refresh the moved dlc_data
     for (int i = 0; i < dlc_data.list_size; i++) {
-      if (refreshNeeded(dlc_data.list[i], "dlc")) {
+      if (refreshNeeded(dlc_data.list[i], "dlc", NULL)) {
         snprintf(path, MAX_PATH_LENGTH, DLC_TEMP "/%s", &dlc_data.list[i][len + 1]);
         if (checkFolderExist(path)) {
           recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
@@ -588,7 +597,7 @@ void patch_callback(void* data, const char* dir, const char* subdir) {
     }
 
     snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-    if (refreshNeeded(path, "patch")) {
+    if (refreshNeeded(path, "patch", NULL)) {
       // Move the directory to temp for installation
       if (checkFolderExist(PATCH_TEMP))
         recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
@@ -613,7 +622,7 @@ void psp_callback(void* data, const char* dir, const char* subdir) {
       }
 
       snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-      if (refreshNeeded(path, "psp")) {
+      if (refreshNeeded(path, "psp", NULL)) {
         char contentid[0x30];
         
         char sce_ebootpbp[MAX_PATH_LENGTH];
@@ -767,7 +776,8 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
     }
 
     snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-    if (refreshNeeded(path, "psm")) {        
+    int eligibility_error = 0;
+    if (refreshNeeded(path, "psm", &eligibility_error)) {
       char contentid_path[MAX_PATH_LENGTH];
       snprintf(contentid_path, MAX_PATH_LENGTH, "%s/RW/System/content_id", path);
       
@@ -777,13 +787,21 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
       // Initalize Bufer
       memset(titleid,0,12);
   
-      // Get content id
-      allocateReadFile(contentid_path, &cidFile);
-  
-      // Get title id from content id
-      strncpy(titleid,cidFile+7,9);
-      
-      //free buffers
+      // Get and validate the content id again. It may have disappeared or
+      // changed since the eligibility check; never dereference a failed read.
+      int contentid_size = allocateReadFile(contentid_path, &cidFile);
+      int contentid_error = contentid_size < 0
+                                ? contentid_size
+                                : VITASHELL_ERROR_INVALID_TITLEID;
+      if (contentid_size < 0 ||
+          refreshParsePsmContentId(cidFile, (size_t)contentid_size, titleid,
+                                   NULL) < 0) {
+        free(cidFile);
+        recordRefreshError(refresh_data, contentid_error,
+                           "PSM content_id read", contentid_path);
+        SetProgress(++refresh_data->processed, refresh_data->count);
+        return;
+      }
       free(cidFile);
       
       
@@ -823,6 +841,9 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
             refresh_data->results.restore_error = restore_res;
         }
       }
+    } else if (eligibility_error < 0) {
+      recordRefreshError(refresh_data, eligibility_error,
+                         "PSM content_id eligibility", path);
     }
     SetProgress(++refresh_data->processed, refresh_data->count);
   } else {
