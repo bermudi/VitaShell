@@ -62,3 +62,5 @@ Explain:
 
 Avoid generated release binaries in ordinary pull requests. Release artifacts
 belong in a dedicated, reviewed release commit.
+
+Maintainers should follow the separate [release process](docs/maintainer/releasing.md).

@@ -28,7 +28,7 @@
 #include "language.h"
 #include "utils.h"
 
-#define BASE_ADDRESS "https://raw.githubusercontent.com/theheroGAC/VitaShell/master/release"
+#define BASE_ADDRESS "https://raw.githubusercontent.com/bermudi/VitaShell/master/release"
 #define VERSION_URL "/version.bin"
 #define VITASHELL_UPDATE_FILE "ux0:VitaShell/internal/VitaShell.vpk"
 #define VITASHELL_VERSION_FILE "ux0:VitaShell/internal/version.bin"
