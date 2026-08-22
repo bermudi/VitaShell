@@ -21,6 +21,7 @@
 #include "network_update.h"
 #include "network_download.h"
 #include "package_installer.h"
+#include "package_install_core.h"
 #include "archive.h"
 #include "file.h"
 #include "message_dialog.h"
@@ -36,6 +37,28 @@ extern unsigned char _binary_resources_updater_eboot_bin_start;
 extern unsigned char _binary_resources_updater_eboot_bin_size;
 extern unsigned char _binary_resources_updater_param_bin_start;
 extern unsigned char _binary_resources_updater_param_bin_size;
+
+static int removeUpdaterStaging(void *context, const char *path) {
+  (void)context;
+  SceIoStat stat;
+  int error = sceIoGetstat(path, &stat);
+  if (error == SCE_ERROR_ERRNO_ENOENT)
+    return 0;
+  if (error < 0)
+    return error;
+
+  error = removePath(path, NULL);
+  return error == SCE_ERROR_ERRNO_ENOENT ? 0 : error;
+}
+
+static int cleanupUpdaterStaging(PackageStagingOwnership ownership) {
+  int error = packageCleanupStaging(ownership, PACKAGE_DIR, NULL,
+                                    removeUpdaterStaging);
+  if (error < 0)
+    debugPrintf("VitaShell update: staging cleanup failed for %s: 0x%08X\n",
+                PACKAGE_DIR, error);
+  return error;
+}
 
 // Thread to auto-close the "no updates" message
 static int autoCloseNoUpdateThread(SceSize args, void *argp) {
@@ -121,27 +144,59 @@ EXIT:
   return sceKernelExitDeleteThread(0);
 }
 
-void installUpdater() {
-  // Recursively clean up pkg directory
-  removePath(PACKAGE_DIR, NULL);
-  sceIoMkdir(PACKAGE_DIR, 0777);
+static int installUpdater(void) {
+  int res = sceIoMkdir(PACKAGE_DIR, 0777);
+  if (res < 0)
+    return res;
+  PackageStagingOwnership staging = PACKAGE_STAGING_DISPOSABLE;
 
   // Make dir
-  sceIoMkdir("ux0:data/pkg/sce_sys", 0777);
+  res = sceIoMkdir(PACKAGE_DIR "/sce_sys", 0777);
+  if (res < 0)
+    goto EXIT;
 
   // Write VitaShell updater files
-  WriteFile("ux0:data/pkg/eboot.bin", (void *)&_binary_resources_updater_eboot_bin_start, (int)&_binary_resources_updater_eboot_bin_size);
-  WriteFile("ux0:data/pkg/sce_sys/param.sfo", (void *)&_binary_resources_updater_param_bin_start, (int)&_binary_resources_updater_param_bin_size);
+  int eboot_size = (int)&_binary_resources_updater_eboot_bin_size;
+  res = WriteFile(PACKAGE_DIR "/eboot.bin",
+                  (void *)&_binary_resources_updater_eboot_bin_start,
+                  eboot_size);
+  if (res != eboot_size) {
+    if (res >= 0)
+      res = VITASHELL_ERROR_INTERNAL;
+    goto EXIT;
+  }
+
+  int param_size = (int)&_binary_resources_updater_param_bin_size;
+  res = WriteFile(PACKAGE_DIR "/sce_sys/param.sfo",
+                  (void *)&_binary_resources_updater_param_bin_start,
+                  param_size);
+  if (res != param_size) {
+    if (res >= 0)
+      res = VITASHELL_ERROR_INTERNAL;
+    goto EXIT;
+  }
 
   // Make head.bin
-  makeHeadBin();
+  res = makeHeadBin();
+  if (res < 0)
+    goto EXIT;
 
   // Promote app
-  promoteApp(PACKAGE_DIR);
+  res = promoteAppWithStatus(PACKAGE_DIR).error;
+
+EXIT:
+  {
+    int cleanup_error = cleanupUpdaterStaging(staging);
+    if (res >= 0 && cleanup_error < 0)
+      res = cleanup_error;
+  }
+  return res;
 }
 
 int update_extract_thread(SceSize args, void *argp) {
   SceUID thid = -1;
+  int archive_open = 0;
+  PackageStagingOwnership staging = PACKAGE_STAGING_UNOWNED;
 
   // Lock power timers
   powerLock();
@@ -151,20 +206,32 @@ int update_extract_thread(SceSize args, void *argp) {
   sceKernelDelayThread(DIALOG_WAIT); // Needed to see the percentage
 
   // Install updater
-  installUpdater();
-
-  // Recursively clean up pkg directory
-  removePath(PACKAGE_DIR, NULL);
-  sceIoMkdir(PACKAGE_DIR, 0777);
-
-  // Open archive
-  archiveClearPassword();
-  int res = archiveOpen(VITASHELL_UPDATE_FILE);
+  int res = installUpdater();
   if (res < 0) {
     closeWaitDialog();
     errorDialog(res);
     goto EXIT;
   }
+
+  // Claim staging for the downloaded VPK. An occupied path is preserved and
+  // reported rather than recursively deleted.
+  res = sceIoMkdir(PACKAGE_DIR, 0777);
+  if (res < 0) {
+    closeWaitDialog();
+    errorDialog(res);
+    goto EXIT;
+  }
+  staging = PACKAGE_STAGING_DISPOSABLE;
+
+  // Open archive
+  archiveClearPassword();
+  res = archiveOpen(VITASHELL_UPDATE_FILE);
+  if (res < 0) {
+    closeWaitDialog();
+    errorDialog(res);
+    goto EXIT;
+  }
+  archive_open = 1;
 
   // Src path
   char *src_path = VITASHELL_UPDATE_FILE "/";
@@ -194,6 +261,14 @@ int update_extract_thread(SceSize args, void *argp) {
     goto EXIT;
   }
 
+  res = archiveClose();
+  archive_open = 0;
+  if (res < 0) {
+    closeWaitDialog();
+    errorDialog(res);
+    goto EXIT;
+  }
+
   // Remove update file
   sceIoRemove(VITASHELL_UPDATE_FILE);
 
@@ -213,10 +288,21 @@ int update_extract_thread(SceSize args, void *argp) {
   sceMsgDialogClose();
 
   setDialogStep(DIALOG_STEP_EXTRACTED);
+  // VSUPDATER now owns the extracted package and will consume it.
+  staging = PACKAGE_STAGING_UNOWNED;
 
 EXIT:
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);
+
+  if (archive_open) {
+    int close_error = archiveClose();
+    if (close_error < 0)
+      debugPrintf("VitaShell update: archive close failed: 0x%08X\n",
+                  close_error);
+  }
+
+  cleanupUpdaterStaging(staging);
 
   // Unlock power timers
   powerUnlock();

@@ -18,3 +18,8 @@ add_vitashell_host_test(test_pfs_core
   test_pfs_core.c
   ../pfs_core.c
 )
+
+add_vitashell_host_test(test_package_install_core
+  test_package_install_core.c
+  ../package_install_core.c
+)

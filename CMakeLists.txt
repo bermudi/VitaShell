@@ -105,6 +105,7 @@ add_executable(VitaShell
   io_process.c
   makezip.c
   package_installer.c
+  package_install_core.c
   refresh.c
   refresh_core.c
   network_update.c
