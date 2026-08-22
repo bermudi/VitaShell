@@ -5,10 +5,11 @@ origin of the `refresh`/`pfs`/`rif` code, or deciding which reference repo is
 relevant to a bug.
 
 ## TL;DR
-- The three "forks" are **not three independent forks**. `RealYoti` is an
+- The three reference "forks" are **not three independent forks**. `RealYoti` is an
   **older snapshot of `theheroGAC`**; `henkaku` is an **unrelated, older
-  lineage**; the dev repo (`bermudi/VitaShell`) is a **fork of `theheroGAC`**,
-  8 commits ahead.
+  lineage**; the dev repo (`bermudi/VitaShell`) is a **fork of `theheroGAC`**.
+  The counts and dev tip below record the investigation snapshot; use
+  `git rev-list --count upstream/master..HEAD` for the current count.
 - For the Refresh LiveArea / Open-decrypted bugs: `henkaku` is irrelevant
   (predates the code). Compare against `theheroGAC` (== dev's base). The
   open-decrypted mount logic in `pfs.c`/`rif.c` is **byte-identical** across
@@ -43,7 +44,7 @@ henkaku: SEPARATE lineage — root fd8e238 (2016-08-06 "Update v0.7") … tip 4f
 | theheroGAC | github.com/theheroGAC/VitaShell | 142 | 78be994 (2022-06-30) | 4695f35 (2025-11-29) |
 | RealYoti | github.com/RealYoti/VitaShell | 19 | 78be994 (2022-06-30) | c7b597d (2024-09-11) |
 | henkaku | github.com/henkaku/VitaShell | 369 | fd8e238 (2016-08-06) | 4fa583c (2017-05-12) |
-| dev (bermudi) | origin bermudi/VitaShell, upstream theheroGAC | 8 ahead of hero | — | 55e80bc |
+| dev snapshot (bermudi) | origin bermudi/VitaShell, upstream theheroGAC | 8 ahead of hero at investigation | — | 55e80bc |
 
 ## Conclusions (labeled: demonstrated vs inference)
 - **[DEMONSTRATED]** `merge-base(theheroGAC, RealYoti) = c7b597d` (== RealYoti
