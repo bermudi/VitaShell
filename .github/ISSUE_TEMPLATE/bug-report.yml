@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible VitaShell failure
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach license files, RIF contents, keys, account data, or unredacted private data.
+
+  - type: input
+    id: version
+    attributes:
+      label: VitaShell version or commit
+      description: Use the exact commit when testing a development build.
+      placeholder: "2.16 or cd58244"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - PS Vita 1000
+        - PS Vita 2000
+        - PS TV
+        - Vita3K
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware
+      placeholder: "3.60, 3.65, 3.68, 3.73, ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: storage
+    attributes:
+      label: Storage configuration
+      description: Include relevant ux0/uma0/imc0 setup and storage plugins.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use disposable content for destructive operations.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result and exact error
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste relevant text from ux0:data/vitashell_log.txt after removing private data. Do not attach binary dumps.
+      render: text
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed secrets, license data, account data, and other private content.
+          required: true
+        - label: I did not perform destructive testing against my only copy of valuable data.
+          required: true

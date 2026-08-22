@@ -1,10 +1,14 @@
 # VitaShell
 
-VitaShell is a file manager and system utility for the PlayStation Vita. It replaces the LiveArea with tools for managing files, installing packages, transferring files over FTP or USB, browsing media, and more.
+VitaShell is a file manager and system utility for the PlayStation Vita. It provides tools for managing files, installing packages, transferring files over FTP or USB, browsing media, and more.
 
 This repository contains an unofficial VitaShell 2.16 build with front-touch support and additional maintenance fixes.
 
 > **Warning:** This is unofficial homebrew. Back up your data before installing or modifying system storage.
+
+The current maintenance work is source-reviewed, host-tested, and VitaSDK
+build-verified. Firmware-dependent fixes still require physical-hardware
+verification before a new release is published.
 
 ## Features
 
@@ -20,7 +24,8 @@ This repository contains an unofficial VitaShell 2.16 build with front-touch sup
 
 ## Installation
 
-1. Build or download `VitaShell.vpk`.
+1. Build `VitaShell.vpk`, or download it from a published release when one is
+   available.
 2. Copy the VPK to the Vita using FTP, USB, or another supported method.
 3. Install it with VitaShell or another homebrew package installer.
 
@@ -39,6 +44,14 @@ cmake --build build
 
 The finished package is written to `build/VitaShell.vpk`.
 
+Platform-independent safety logic can be built and tested without VitaSDK:
+
+```sh
+cmake -S . -B build-host -DVITASHELL_HOST_TESTS=ON
+cmake --build build-host
+ctest --test-dir build-host --output-on-failure
+```
+
 ## PS TV USB storage
 
 VitaShell can temporarily mount a USB flash drive as `ux0:` on a PS TV:
@@ -50,7 +63,7 @@ VitaShell can temporarily mount a USB flash drive as `ux0:` on a PS TV:
 5. Use **Refresh LiveArea** to update applications on the drive.
 6. Select **Umount USB ux0:** before disconnecting or reverting the change.
 
-This mount is temporary and must be repeated after restarting the PS TV. Refreshing LiveArea does not refresh PSP games.
+This mount is temporary and must be repeated after restarting the PS TV.
 
 ## Themes
 
@@ -82,8 +95,6 @@ Available translations are maintained in [`l10n/`](l10n/), including:
 - Chinese (simplified and traditional)
 - Danish
 - Dutch
-- English (US)
-- Finnish
 - French
 - German
 - Greeklish
@@ -103,8 +114,11 @@ VitaShell selects the translation matching the system language when available.
 
 ## Development
 
+- [Contributing](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
+- [Testing notes](docs/agent-context/testing.md)
 - [Original VitaShell](https://github.com/TheOfficialFloW/VitaShell)
+- [theheroGAC fork](https://github.com/theheroGAC/VitaShell)
 - [VitaSDK](https://github.com/vitasdk)
 
 ## Credits

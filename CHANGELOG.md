@@ -1,4 +1,25 @@
-# VitaShell 2.15 (mod by theheroGAC)
+# Changelog
+
+## Unreleased
+
+### Safety
+- Preserve occupied package staging rather than deleting unknown content.
+- Preserve moved installation folders when restoration fails.
+- Guard package, FTP, and updater cleanup using explicit staging ownership.
+- Validate PSM content IDs before constructing staging paths or promoting.
+
+### Diagnostics and testing
+- Report Refresh LiveArea scan, staging, restoration, cleanup, and PSM content
+  errors instead of collapsing them into a zero-item result.
+- Log each Open Decrypted mount attempt while preserving mount order.
+- Add host tests for refresh transactions, PFS mount ordering, package staging,
+  atomic `work.bin` writes, and DLC recovery.
+
+### Verification status
+- Host-tested and VitaSDK build-verified.
+- Physical-hardware verification is pending.
+
+## VitaShell 2.15 (mod by theheroGAC)
 
 ## What's New in 2.15
 
