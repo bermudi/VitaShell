@@ -1,7 +1,15 @@
 # AGENTS.md
 
 ## Project
-VitaShell fork to diagnose why **Refresh LiveArea** reports `Refreshed 0 items` and why **Open decrypted** fails with `0x80800004`, then fix clear bugs with better diagnostics — **without risking user data**. Not a rewrite. Small, evidence-backed changes only.
+Actively maintained VitaShell fork based on `theheroGAC/VitaShell`. The first maintenance effort targets why **Refresh LiveArea** reports `Refreshed 0 items`, why **Open decrypted** fails with `0x80800004`, and clear package-install/update safety bugs — **without risking user data**. Not a rewrite. Small, evidence-backed changes only.
+
+## Current State
+- Portable host coverage exists for refresh transactions, PFS mount ordering, package-staging ownership, atomic `work.bin` writes, PSM content-ID parsing, and DLC recovery.
+- Host CI lives in `.github/workflows/host-tests.yml`; it does not replace VitaSDK, Vita3K, or hardware verification.
+- Package/VPK/FTP/updater staging now uses explicit ownership. Occupied `ux0:data/pkg` is preserved; failed folder restoration must leave the staged copy untouched.
+- PSM `content_id` must be exactly 48 bytes with a safe nine-character uppercase-alphanumeric title ID before it is used in a path or promoter call.
+- Update checks belong to `bermudi/VitaShell`, not another fork. Do not publish/update `release/` until its VPK and all version metadata are regenerated together.
+- Current maintenance changes are source-reviewed, host-tested, and VitaSDK build-verified; firmware-dependent behavior remains hardware-unverified.
 
 ## Stack
 | Area | Tooling |
@@ -12,20 +20,24 @@ VitaShell fork to diagnose why **Refresh LiveArea** reports `Refreshed 0 items` 
 | Emulation | Vita3K for light integration checks — not proof of hardware behavior |
 
 ## Architecture
-- File manager / package installer / PFS helper with kernel+user modules in `modules/`.
-- Two hot paths: **Refresh LiveArea** (scan `ux0:` → stage → ensure `work.bin` → promote via `scePromoterUtilityPromotePkgWithRif` → restore/cleanup) and **Open decrypted** (try private mount IDs → fallback mount).
-- Code is source of truth for file layout. See `docs/agent-context/refresh.md` and `docs/agent-context/pfs.md` for detailed flows.
+- File manager / package installer / updater / PFS helper with kernel+user modules in `modules/`.
+- Three hot paths:
+  - **Refresh LiveArea:** scan `ux0:` → stage → ensure `work.bin` → promote via `scePromoterUtilityPromotePkgWithRif` → restore/cleanup.
+  - **Package install/update:** exclusively claim `ux0:data/pkg` → extract or move source → generate metadata → promote/handoff → restore or guarded cleanup.
+  - **Open decrypted:** try private mount IDs → fallback mount.
+- Code is source of truth for file layout. See the linked context documents for detailed flows.
 
 ## Constraints & Red Lines
 - **User data is sacred.** Anything touching `ux0:app/addcont/patch/psm/pspemu/license`, `work.bin`, promotion, or PFS mounts is potentially destructive. Every FS/API op can fail — code for it. Never lose/overwrite/move/partially restore user content.
-- **Refresh invariants** — must hold on any failure (details in `docs/agent-context/refresh.md`):
+- **Staging invariants** — apply to refresh, package installation, FTP promotion, and updater paths (details in `docs/agent-context/refresh.md` and `package-install.md`):
   - Never destroy an occupied staging dir to make progress.
   - Failed staging → do not call promoter.
   - Failed promotion (pre-commit) → restore original when possible.
-  - Failed restore → hard stop for that staging location.
+  - Failed restore → hard stop; preserve staging because it may hold the only copy.
   - Post-commit cleanup failure ≠ promotion failure — don't roll back a committed app.
+  - Remove staging only when the current operation established that it is disposable.
   - Cancellation is not an error.
-  - Scan errors must surface — never silently become `Refreshed 0 items`.
+  - Scan/read errors must surface — never silently become `Refreshed 0 items`.
 - **Secrets never enter context.** Don't echo/read/print keys/tokens; reference via env/process only. If you see a value, stop and warn to rotate.
 - **Recoverable beats gone.** Prefer `trash` over `rm`; no force-push, no dropping data/branches/volumes/dbs without explicit confirmation.
 
@@ -36,12 +48,16 @@ Keep these — agent can't infer them from code alone:
 - `0x80800004` is the observed fallback mount failure — don't assign symbolic meaning without evidence.
 - Dev logs go to `ux0:data/vitashell_log.txt` as `Operation(path=..., id=...) returned 0x...` (no binary dumps).
 - This repo does **not** scan `ux0:nonpdrm/license/` during refresh; dormant `ksceNpDrmGetRifVitaKey()` code is disabled — treat enabling as experimental (separate commit, document hypothesis, keep fallback).
+- `ux0:data/pkg` is shared by folder installs, VPK extraction, FTP promotion, and self-update. Its existence is a collision, not permission to recursively delete it.
+- `release/` contains tracked generated artifacts and may be stale. Updater version bytes are little-endian `(major << 24) | (minor << 16)`; for source constants `0x02.0x10`, bytes are `00 00 10 02`.
 
 ## Conventions
 - **Evidence over assumptions.** Distinguish *demonstrated by source* vs *supported inference (firmware behavior inferred from APIs)* vs *unknown*. Don't turn guesses into facts.
 - **Error handling:** preserve the first meaningful error; don't collapse to a generic count. Cleanup errors don't erase the original unless more severe.
 - **Diagnostics vs behavior:** log/API-path fixes and behavior changes belong in separate commits. Experimental (mount IDs, klicensee, PFS semantics) gets its own commit.
 - **Smallest fix that could work.** No opportunistic rewrites, UI churn, or new deps without concrete need. Match patterns of nearby code.
+- **Repository maintenance:** keep issue/PR templates and CI aligned with actual checks. Do not automate releases or claim reproducible Vita builds until VitaSDK and its packages are immutably pinned.
+- **Branch safety:** inspect local/remote topology before integrating. No force-push. Maintenance work may be ahead of the public branches; never assume an unpushed commit is on GitHub.
 
 ## Workflow
 ```bash
@@ -60,6 +76,8 @@ git status; git log -1 --oneline; git diff --check  # working tree clean, no new
 
 ## Quality Bar
 Done means you can state: what bug/failure mode it addresses, what source evidence justified it, what invariants it preserves, what tests (including fault-injection) cover it, and whether Vita3K/hardware verification is still needed. For firmware-dependent behavior, prefer: *"Source-reviewed, host-tested, build-verified. Hardware unverified."* over *"Fixed."*
+
+A public release additionally requires consistent source/SFO/LiveArea/update metadata, regenerated artifacts, checksums, a clean reviewed commit, and recorded physical-hardware results. See `docs/maintainer/releasing.md`.
 
 ## Further Context
 - `docs/agent-context/refresh.md` — staging state machine, work.bin rules, NoNpDrm note
