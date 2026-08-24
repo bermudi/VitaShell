@@ -8,8 +8,10 @@ Actively maintained VitaShell fork based on `theheroGAC/VitaShell`. The first ma
 - Host CI lives in `.github/workflows/host-tests.yml`; it does not replace VitaSDK, Vita3K, or hardware verification.
 - Package/VPK/FTP/updater staging now uses explicit ownership. Occupied `ux0:data/pkg` is preserved; failed folder restoration must leave the staged copy untouched.
 - PSM `content_id` must be exactly 48 bytes with a safe nine-character uppercase-alphanumeric title ID before it is used in a path or promoter call.
+- Refresh LiveArea's `Refreshed 0 items` was traced to an unreclaimed staging copy: the promoter copies its source rather than consuming it, but nothing deleted the staging dir after a committed promotion, so the next run tripped the occupied-staging guard and refused every app (self-sustaining the symptom). Fixed in `55e80bc` — `cleanupStaged()` runs only after the promoter commits (success or committed-with-error), never on restore paths; covered by host tests (21 refresh + 12 pfs). Hardware still unverified.
 - Update checks belong to `bermudi/VitaShell`, not another fork. Do not publish/update `release/` until its VPK and all version metadata are regenerated together.
 - Current maintenance changes are source-reviewed, host-tested, and VitaSDK build-verified; firmware-dependent behavior remains hardware-unverified.
+- Hardware test is staged on a throwaway SD: ONEMenu 3.22 copied byte-identical from the live card as fallback, disposable title `GBVXTST01` (GBVitaEX clone with patched TITLE_ID) staged at `ux0:data/vitashell-test/GBVXTST01-ready`, test VPK `VitaShell-test-b5e43ee.vpk` + 2.04 rescue VPK in `ux0:data/vitashell-test/`, `TEST-PLAN.txt` on card; host backup under `~/VitaShell-hardware-test-*`. Run one Refresh LiveArea, capture `ux0:data/vitashell_log.txt`; expect `Refreshed 1 item` and an absent `ux0:temp/app`.
 
 ## Stack
 | Area | Tooling |
