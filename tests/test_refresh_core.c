@@ -368,6 +368,7 @@ typedef struct {
   int close_calls;
   int remove_calls;
   int rename_calls;
+  int expectation_failed;
   char opened_path[64];
   char renamed_source[64];
   char renamed_destination[64];
@@ -381,9 +382,10 @@ static int fakeOpen(void *context, const char *path) {
 
 static int fakeWrite(void *context, int fd, const void *buffer, size_t size) {
   WorkFake *fake = context;
-  CHECK(fd == fake->open_result);
-  CHECK(buffer == fake->expected_rif + fake->expected_offsets[fake->write_calls]);
-  CHECK(size == fake->expected_sizes[fake->write_calls]);
+  if (fd != fake->open_result ||
+      buffer != (const void *)(fake->expected_rif + fake->expected_offsets[fake->write_calls]) ||
+      size != fake->expected_sizes[fake->write_calls])
+    fake->expectation_failed = 1;
   int result = fake->writes[fake->write_calls];
   fake->write_calls++;
   return result;
@@ -391,14 +393,16 @@ static int fakeWrite(void *context, int fd, const void *buffer, size_t size) {
 
 static int fakeClose(void *context, int fd) {
   WorkFake *fake = context;
-  CHECK(fd == fake->open_result);
+  if (fd != fake->open_result)
+    fake->expectation_failed = 1;
   fake->close_calls++;
   return fake->close_result;
 }
 
 static int fakeRemove(void *context, const char *path) {
   WorkFake *fake = context;
-  CHECK(strcmp(path, "work.bin.tmp") == 0);
+  if (strcmp(path, "work.bin.tmp") != 0)
+    fake->expectation_failed = 1;
   fake->remove_calls++;
   return fake->remove_result;
 }
@@ -431,6 +435,7 @@ static int testWorkBinOpenFailureDoesNothingElse(void) {
   CHECK(fake.rename_calls == 0);
   CHECK(fake.remove_calls == 0);
   CHECK(cleanup_error == 0);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
@@ -454,6 +459,7 @@ static int testWorkBinFullWriteIsCommitted(void) {
   CHECK(strcmp(fake.renamed_source, "work.bin.tmp") == 0);
   CHECK(strcmp(fake.renamed_destination, "work.bin") == 0);
   CHECK(cleanup_error == 0);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
@@ -472,6 +478,7 @@ static int testWorkBinRetriesShortWrites(void) {
                             &ops, NULL) == 0);
   CHECK(fake.write_calls == 2);
   CHECK(fake.rename_calls == 1);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
@@ -490,6 +497,7 @@ static int testWorkBinZeroWriteRemovesPartial(void) {
   CHECK(fake.close_calls == 1);
   CHECK(fake.rename_calls == 0);
   CHECK(fake.remove_calls == 1);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
@@ -508,6 +516,7 @@ static int testWorkBinCloseFailureIsVisible(void) {
                             &ops, NULL) == -201);
   CHECK(fake.rename_calls == 0);
   CHECK(fake.remove_calls == 1);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
@@ -526,6 +535,7 @@ static int testWorkBinRenameFailureRemovesTemporaryFile(void) {
                             &ops, NULL) == -204);
   CHECK(fake.rename_calls == 1);
   CHECK(fake.remove_calls == 1);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
@@ -544,6 +554,7 @@ static int testWorkBinCleanupFailureIsSeparate(void) {
   CHECK(refreshWriteWorkBin("work.bin", "work.bin.tmp", rif, -200,
                             &ops, &cleanup_error) == -202);
   CHECK(cleanup_error == -203);
+  CHECK(fake.expectation_failed == 0);
   return 0;
 }
 
