@@ -1162,7 +1162,7 @@ static int licensePrepareImport(void *context) {
 
   // Create the DB if needed
   SceUID fd = sceIoOpen(LICENSE_DB, SCE_O_RDONLY, 0777);
-  if (fd > 0) {
+  if (fd >= 0) {
     sceIoClose(fd);
     return 0;
   }
