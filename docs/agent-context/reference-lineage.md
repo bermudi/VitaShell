@@ -90,7 +90,7 @@ Notable promote-path suspect:
 
 ## Reproduce / re-verify
 ```bash
-cd /home/daniel/build/VitaShell/refs
+cd refs  # from the repository root (<local-refs-dir> = <repo>/refs)
 # unshallow all three (one-time)
 git -C theheroGAC-VitaShell fetch --unshallow
 git -C RealYoti-VitaShell     fetch --unshallow
