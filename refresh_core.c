@@ -233,3 +233,29 @@ int refreshRestoreOrPromoteDlc(
 
   return 0;
 }
+
+LicenseScanResult licenseScanCategories(
+    const char *const *roots, int root_count,
+    const LicenseScanOps *ops, int *scan_error) {
+  if (scan_error != NULL)
+    *scan_error = 0;
+
+  for (int i = 0; i < root_count; i++) {
+    int result = ops->scan_category(ops->context, roots[i]);
+    if (result == 0)
+      continue;
+    if (result > 0)
+      return LICENSE_SCAN_CANCELED;
+    if (result == LICENSE_SCAN_NOT_FOUND) {
+      if (ops->report_skip != NULL)
+        ops->report_skip(ops->context, roots[i], result);
+      continue;
+    }
+    if (ops->report_error != NULL)
+      ops->report_error(ops->context, roots[i], result);
+    if (scan_error != NULL)
+      *scan_error = result;
+    return LICENSE_SCAN_FAILED;
+  }
+  return LICENSE_SCAN_COMPLETED;
+}

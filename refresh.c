@@ -35,6 +35,9 @@
 #include "pfs.h"
 #include "pbp.h"
 
+_Static_assert(LICENSE_SCAN_NOT_FOUND == SCE_ERROR_ERRNO_ENOENT,
+               "license scan not-found code must match SCE_ERROR_ERRNO_ENOENT");
+
 // Note: The promotion process is *VERY* sensitive to the directories used below
 // Don't change them unless you know what you are doing!
 #define APP_TEMP "ux0:temp/app"
@@ -1071,9 +1074,35 @@ void license_dir_callback(void* data, const char* dir, const char* subdir) {
   license_data->cur_depth--;
 }
 
+static int licenseScanCategory(void *context, const char *root) {
+  license_data_t *license_data = context;
+  int res = parse_dir_with_callback(SCE_S_IFDIR, root, license_dir_callback,
+                                    license_data);
+  // The next category scans one level deeper regardless of this scan's result.
+  license_data->max_depth++;
+  return res;
+}
+
+static void licenseReportSkip(void *context, const char *root, int error) {
+  (void)context;
+  debugPrintf("Import licenses: parse_dir_with_callback(path=%s) returned "
+              "0x%08X; skipping absent category\n", root, error);
+}
+
+static void licenseReportError(void *context, const char *root, int error) {
+  (void)context;
+  debugPrintf("Import licenses: parse_dir_with_callback(path=%s) returned "
+              "0x%08X\n", root, error);
+}
+
 int license_thread(SceSize args, void *argp) {
   SceUID thid = -1;
   license_data_t license_data = { 0, 0, 0, 0, 0, 1, malloc(RIF_SIZE) };
+  static const char *const license_roots[] = {
+    "ux0:license/app",
+    "ux0:license/addcont",
+  };
+  int scan_error = 0;
 
   if (license_data.rif == NULL)
     goto EXIT;
@@ -1085,12 +1114,18 @@ int license_thread(SceSize args, void *argp) {
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 0);
   sceKernelDelayThread(DIALOG_WAIT); // Needed to see the percentage
 
+  LicenseScanOps scan_ops = {
+    &license_data,
+    licenseScanCategory,
+    licenseReportSkip,
+    licenseReportError,
+  };
+
   // NB: ux0:license access requires elevated permisions
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) != 0)
-    goto EXIT;
-  license_data.max_depth++;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) != 0)
-    goto EXIT;
+  if (licenseScanCategories(license_roots,
+                            sizeof(license_roots) / sizeof(license_roots[0]),
+                            &scan_ops, &scan_error) != LICENSE_SCAN_COMPLETED)
+    goto SCAN_DONE;
 
   // Update thread
   thid = createStartUpdateThread(license_data.count, 0);
@@ -1099,18 +1134,23 @@ int license_thread(SceSize args, void *argp) {
   SceUID fd = sceIoOpen(LICENSE_DB, SCE_O_RDONLY, 0777);
   if (fd > 0) {
     sceIoClose(fd);
-  } else if (create_db(LICENSE_DB, LICENSE_DB_SCHEMA) != 0) {
-    goto EXIT;
+  } else {
+    int db_error = create_db(LICENSE_DB, LICENSE_DB_SCHEMA);
+    if (db_error != 0) {
+      debugPrintf("Import licenses: create_db(path=%s) returned %d\n",
+                  LICENSE_DB, db_error);
+      scan_error = VITASHELL_ERROR_INTERNAL;
+      goto SCAN_DONE;
+    }
   }
 
   // Insert the licenses
   license_data.copy_pass = 1;
   license_data.max_depth = 1;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) != 0)
-    goto EXIT;
-  license_data.max_depth++;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) != 0)
-    goto EXIT;
+  if (licenseScanCategories(license_roots,
+                            sizeof(license_roots) / sizeof(license_roots[0]),
+                            &scan_ops, &scan_error) != LICENSE_SCAN_COMPLETED)
+    goto SCAN_DONE;
 
   // Set progress to 100%
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 100);
@@ -1120,6 +1160,14 @@ int license_thread(SceSize args, void *argp) {
   closeWaitDialog();
 
   infoDialog(language_container[IMPORTED_LICENSES], license_data.copied);
+  goto EXIT;
+
+SCAN_DONE:
+  // Cancellation already closed the dialog and is not an error.
+  if (scan_error < 0) {
+    closeWaitDialog();
+    errorDialog(scan_error);
+  }
 
 EXIT:
   if (thid >= 0)

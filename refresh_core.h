@@ -138,4 +138,36 @@ int refreshRestoreOrPromoteDlc(
     const RefreshTransactionOps *ops,
     const RefreshOperationNames *names);
 
+/* sceIoDopen result for an absent directory (SCE_ERROR_ERRNO_ENOENT). */
+#define LICENSE_SCAN_NOT_FOUND ((int)0x80010002)
+
+typedef enum {
+  LICENSE_SCAN_COMPLETED,
+  LICENSE_SCAN_CANCELED,
+  LICENSE_SCAN_FAILED
+} LicenseScanResult;
+
+typedef int (*LicenseScanCategoryFn)(void *context, const char *root);
+typedef void (*LicenseScanReportFn)(void *context, const char *root, int error);
+
+typedef struct {
+  void *context;
+  /* Runs one parse_dir_with_callback scan of root and returns its result. */
+  LicenseScanCategoryFn scan_category;
+  /* Reports a category root that is absent and is therefore skipped. */
+  LicenseScanReportFn report_skip;
+  /* Reports a scan failure other than an absent category root. */
+  LicenseScanReportFn report_error;
+} LicenseScanOps;
+
+/*
+  Scans license category roots in order. A confirmed directory-not-found
+  result skips that category, so an absent addcont tree cannot prevent
+  importing app licenses. Any other negative result stops the sequence and is
+  returned through scan_error; a positive result is cancellation, not an error.
+*/
+LicenseScanResult licenseScanCategories(
+    const char *const *roots, int root_count,
+    const LicenseScanOps *ops, int *scan_error);
+
 #endif

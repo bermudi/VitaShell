@@ -735,6 +735,169 @@ static int testDlcRecoveryRenameFailureRecordsError(void) {
   return 0;
 }
 
+typedef struct {
+  const int *results;
+  int call_count;
+  char scanned_roots[4][64];
+  char skipped_roots[4][64];
+  int skipped_errors[4];
+  int skip_count;
+  char failed_roots[4][64];
+  int failed_errors[4];
+  int failure_count;
+} LicenseScanFake;
+
+static int fakeLicenseScanCategory(void *context, const char *root) {
+  LicenseScanFake *fake = context;
+  snprintf(fake->scanned_roots[fake->call_count],
+           sizeof(fake->scanned_roots[0]), "%s", root);
+  return fake->results[fake->call_count++];
+}
+
+static void fakeLicenseReportSkip(void *context, const char *root, int error) {
+  LicenseScanFake *fake = context;
+  snprintf(fake->skipped_roots[fake->skip_count],
+           sizeof(fake->skipped_roots[0]), "%s", root);
+  fake->skipped_errors[fake->skip_count] = error;
+  fake->skip_count++;
+}
+
+static void fakeLicenseReportError(void *context, const char *root, int error) {
+  LicenseScanFake *fake = context;
+  snprintf(fake->failed_roots[fake->failure_count],
+           sizeof(fake->failed_roots[0]), "%s", root);
+  fake->failed_errors[fake->failure_count] = error;
+  fake->failure_count++;
+}
+
+static LicenseScanOps licenseScanOps(LicenseScanFake *fake) {
+  LicenseScanOps ops = {
+    fake,
+    fakeLicenseScanCategory,
+    fakeLicenseReportSkip,
+    fakeLicenseReportError,
+  };
+  return ops;
+}
+
+static const char *const license_roots[] = {
+  "ux0:license/app",
+  "ux0:license/addcont",
+};
+
+static int testLicenseScanSuccessScansEveryCategory(void) {
+  const int results[] = { 0, 0 };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = -1;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_COMPLETED);
+  CHECK(fake.call_count == 2);
+  CHECK(fake.skip_count == 0);
+  CHECK(fake.failure_count == 0);
+  CHECK(scan_error == 0);
+  return 0;
+}
+
+static int testLicenseScanMissingAppCategoryIsSkipped(void) {
+  const int results[] = { LICENSE_SCAN_NOT_FOUND, 0 };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = -1;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_COMPLETED);
+  CHECK(fake.call_count == 2);
+  CHECK(strcmp(fake.scanned_roots[1], "ux0:license/addcont") == 0);
+  CHECK(fake.skip_count == 1);
+  CHECK(strcmp(fake.skipped_roots[0], "ux0:license/app") == 0);
+  CHECK(fake.skipped_errors[0] == LICENSE_SCAN_NOT_FOUND);
+  CHECK(fake.failure_count == 0);
+  CHECK(scan_error == 0);
+  return 0;
+}
+
+static int testLicenseScanMissingAddcontCategoryIsSkipped(void) {
+  const int results[] = { 0, LICENSE_SCAN_NOT_FOUND };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = -1;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_COMPLETED);
+  CHECK(fake.call_count == 2);
+  CHECK(fake.skip_count == 1);
+  CHECK(strcmp(fake.skipped_roots[0], "ux0:license/addcont") == 0);
+  CHECK(fake.failure_count == 0);
+  CHECK(scan_error == 0);
+  return 0;
+}
+
+static int testLicenseScanBothCategoriesMissingAreSkipped(void) {
+  const int results[] = { LICENSE_SCAN_NOT_FOUND, LICENSE_SCAN_NOT_FOUND };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = -1;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_COMPLETED);
+  CHECK(fake.call_count == 2);
+  CHECK(fake.skip_count == 2);
+  CHECK(fake.failure_count == 0);
+  CHECK(scan_error == 0);
+  return 0;
+}
+
+static int testLicenseScanGenuineFailureStopsAndReports(void) {
+  const int permission_error = 0x8001000D; /* EACCES */
+  const int results[] = { 0, permission_error };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = 0;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_FAILED);
+  CHECK(fake.call_count == 2);
+  CHECK(fake.skip_count == 0);
+  CHECK(fake.failure_count == 1);
+  CHECK(strcmp(fake.failed_roots[0], "ux0:license/addcont") == 0);
+  CHECK(fake.failed_errors[0] == permission_error);
+  CHECK(scan_error == permission_error);
+  return 0;
+}
+
+static int testLicenseScanFailureStopsBeforeLaterCategories(void) {
+  const int permission_error = 0x8001000D; /* EACCES */
+  const int results[] = { permission_error, 0 };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = 0;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_FAILED);
+  CHECK(fake.call_count == 1);
+  CHECK(fake.failure_count == 1);
+  CHECK(strcmp(fake.failed_roots[0], "ux0:license/app") == 0);
+  CHECK(scan_error == permission_error);
+  return 0;
+}
+
+static int testLicenseScanCancellationIsNotAnError(void) {
+  const int results[] = { 1, 0 };
+  LicenseScanFake fake = { .results = results };
+  LicenseScanOps ops = licenseScanOps(&fake);
+  int scan_error = -1;
+
+  CHECK(licenseScanCategories(license_roots, ARRAY_SIZE(license_roots), &ops,
+                              &scan_error) == LICENSE_SCAN_CANCELED);
+  CHECK(fake.call_count == 1);
+  CHECK(fake.skip_count == 0);
+  CHECK(fake.failure_count == 0);
+  CHECK(scan_error == 0);
+  return 0;
+}
+
 int main(void) {
   int (*tests[])(void) = {
     testPsmContentIdParsing,
@@ -763,6 +926,13 @@ int main(void) {
     testDlcCascadeFromPromotionRestoreFailure,
     testDlcNullEntriesSkipped,
     testDlcRecoveryRenameFailureRecordsError,
+    testLicenseScanSuccessScansEveryCategory,
+    testLicenseScanMissingAppCategoryIsSkipped,
+    testLicenseScanMissingAddcontCategoryIsSkipped,
+    testLicenseScanBothCategoriesMissingAreSkipped,
+    testLicenseScanGenuineFailureStopsAndReports,
+    testLicenseScanFailureStopsBeforeLaterCategories,
+    testLicenseScanCancellationIsNotAnError,
   };
 
   for (size_t i = 0; i < ARRAY_SIZE(tests); i++) {
