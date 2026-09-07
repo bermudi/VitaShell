@@ -207,12 +207,17 @@ void powerLock() {
 }
 
 void powerUnlock() {
-  if (lock_power)
-    sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN);
-
-  lock_power--;
-  if (lock_power < 0)
-    lock_power = 0;
+  // Mirror powerLock(): only release the PS-button lock on the 1->0
+  // transition. The previous form called sceShellUtilUnlock() on every
+  // unlock, so when two operations overlapped (e.g. FTP server + VPK
+  // install) the first to finish dropped the PS-button guard while the
+  // second was still mid-write — exactly the window where a PS-button
+  // backgrounding can leave a half-installed package.
+  if (lock_power > 0) {
+    lock_power--;
+    if (lock_power == 0)
+      sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN);
+  }
 }
 
 void readPad() {
