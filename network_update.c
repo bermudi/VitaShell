@@ -75,22 +75,28 @@ int network_update_thread(SceSize args, void *argp) {
   int64_t size = 0;
   long code = 0;
   // Prepare the update check URL
-  if (getDownloadFileInfo(BASE_ADDRESS VERSION_URL, &size, NULL, &code) >= 0 && size == sizeof(uint32_t)) {
+  // NB: Content-Length is unreliable (chunked transfers report -1), so the
+  // HEAD request is only a reachability hint. The actual version payload is
+  // validated by size after download.
+  if (getDownloadFileInfo(BASE_ADDRESS VERSION_URL, &size, NULL, &code) >= 0 && code == 200) {
     uint64_t value = 0;
-  
+
     FileProcessParam param;
     param.value = &value;
-    param.max = size;
+    param.max = sizeof(uint32_t);
     param.SetProgress = NULL;
     param.cancelHandler = NULL;
 
     int res = downloadFile(BASE_ADDRESS VERSION_URL, VITASHELL_VERSION_FILE, &param);
-    if (res <= 0)
+    if (res < 0)
       goto EXIT;
 
     // Read version
     uint32_t version = 0;
-    ReadFile(VITASHELL_VERSION_FILE, &version, sizeof(uint32_t));
+    if (ReadFile(VITASHELL_VERSION_FILE, &version, sizeof(uint32_t)) != sizeof(uint32_t)) {
+      sceIoRemove(VITASHELL_VERSION_FILE);
+      goto EXIT;
+    }
     sceIoRemove(VITASHELL_VERSION_FILE);
 
     // Only show update question if no dialog is running
