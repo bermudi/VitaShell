@@ -1086,10 +1086,10 @@ int license_thread(SceSize args, void *argp) {
   sceKernelDelayThread(DIALOG_WAIT); // Needed to see the percentage
 
   // NB: ux0:license access requires elevated permisions
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) < 0)
+  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) != 0)
     goto EXIT;
   license_data.max_depth++;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) < 0)
+  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) != 0)
     goto EXIT;
 
   // Update thread
@@ -1106,10 +1106,10 @@ int license_thread(SceSize args, void *argp) {
   // Insert the licenses
   license_data.copy_pass = 1;
   license_data.max_depth = 1;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) < 0)
+  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) != 0)
     goto EXIT;
   license_data.max_depth++;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) < 0)
+  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) != 0)
     goto EXIT;
 
   // Set progress to 100%
