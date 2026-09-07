@@ -4,7 +4,7 @@
 Actively maintained VitaShell fork based on `theheroGAC/VitaShell`. The first maintenance effort targets why **Refresh LiveArea** reports `Refreshed 0 items`, why **Open decrypted** fails with `0x80800004`, and clear package-install/update safety bugs — **without risking user data**. Not a rewrite. Small, evidence-backed changes only.
 
 ## Current State
-- Portable host coverage exists for refresh transactions, PFS mount ordering, package-staging ownership, atomic `work.bin` writes, PSM content-ID parsing, and DLC recovery.
+- Portable host coverage exists for refresh transactions, PFS mount ordering, package-staging ownership, atomic `work.bin` writes, PSM content-ID parsing, DLC recovery, and license import (scan classification, two-pass count→prepare→copy driver, per-RIF open/read/close/insert failure propagation).
 - Host CI lives in `.github/workflows/host-tests.yml`; it does not replace VitaSDK, Vita3K, or hardware verification.
 - Package/VPK/FTP/updater staging now uses explicit ownership. Occupied `ux0:data/pkg` is preserved; failed folder restoration must leave the staged copy untouched.
 - PSM `content_id` must be exactly 48 bytes with a safe nine-character uppercase-alphanumeric title ID before it is used in a path or promoter call.

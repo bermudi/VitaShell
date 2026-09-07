@@ -170,4 +170,55 @@ LicenseScanResult licenseScanCategories(
     const char *const *roots, int root_count,
     const LicenseScanOps *ops, int *scan_error);
 
+typedef int (*LicensePrepareFn)(void *context);
+
+typedef struct {
+  /* Shared by both passes; the context selects counting or copying. */
+  LicenseScanOps scan;
+  /*
+    Runs once after the counting pass completed and before the copy pass
+    starts (creates the progress worker and the database). A negative result
+    aborts the import before any license is copied.
+  */
+  LicensePrepareFn prepare_import;
+} LicenseImportOps;
+
+/*
+  Counts every category root, runs prepare_import once, then copies. A failure
+  in the counting pass or in prepare_import prevents the copy pass from
+  starting. A failure while copying stops later categories and is returned
+  through import_error; licenses already copied are retained, never undone.
+  Cancellation is not an error.
+*/
+LicenseScanResult licenseImportCategories(
+    const char *const *roots, int root_count,
+    const LicenseImportOps *ops, int *import_error);
+
+typedef int (*LicenseOpenFn)(void *context, const char *path);
+typedef int (*LicenseReadFn)(void *context, int fd, void *buffer, size_t size);
+typedef int (*LicenseCloseFn)(void *context, int fd);
+typedef int (*LicenseInsertFn)(void *context, const uint8_t *rif);
+
+typedef struct {
+  void *context;
+  LicenseOpenFn open_file;
+  LicenseReadFn read_file;
+  LicenseCloseFn close_file;
+  LicenseInsertFn insert_rif;
+} LicenseFileOps;
+
+/*
+  Imports one RIF file: open, read exactly rif_size bytes, close, insert.
+  open/read/close/insert follow the sceIo convention: negative means failure,
+  read returns the byte count on success. The first failure is returned and
+  the descriptor is closed even when reading fails; a read that yields fewer
+  bytes than requested (truncated file) is reported as short_read_error.
+*/
+int licenseImportRif(
+    const char *path,
+    uint8_t *rif,
+    size_t rif_size,
+    int short_read_error,
+    const LicenseFileOps *ops);
+
 #endif

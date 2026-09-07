@@ -408,8 +408,10 @@ typedef struct {
   int count;
   int processed;
   int copied;
+  int error;
   int cur_depth;
   int max_depth;
+  SceUID update_thid;
   uint8_t* rif;
 } license_data_t;
 
@@ -1038,6 +1040,44 @@ CLEANUP:
 // Note: This is currently not optimized AT ALL.
 // Ultimately, we want to use a single transaction and avoid trying to
 // re-insert rifs that are already present.
+static int licenseOpenFile(void *context, const char *path) {
+  (void)context;
+  return sceIoOpen(path, SCE_O_RDONLY, 0777);
+}
+
+static int licenseReadFile(void *context, int fd, void *buffer, size_t size) {
+  (void)context;
+  int read = sceIoRead(fd, buffer, size);
+  if (read >= 0 && (size_t)read != size)
+    debugPrintf("Import licenses: sceIoRead returned %d of %d bytes\n",
+                read, (int)size);
+  return read;
+}
+
+static int licenseCloseFile(void *context, int fd) {
+  (void)context;
+  return sceIoClose(fd);
+}
+
+static int licenseInsertRif(void *context, const uint8_t *rif) {
+  (void)context;
+  int rc = insert_rif(LICENSE_DB, rif);
+  if (rc != 0) {
+    debugPrintf("Import licenses: insert_rif(path=%s) returned %d\n",
+                LICENSE_DB, rc);
+    return VITASHELL_ERROR_INTERNAL;
+  }
+  return 0;
+}
+
+static const LicenseFileOps license_file_ops = {
+  NULL,
+  licenseOpenFile,
+  licenseReadFile,
+  licenseCloseFile,
+  licenseInsertRif,
+};
+
 void license_file_callback(void* data, const char* dir, const char* file) {
   license_data_t *license_data = (license_data_t*)data;
   char path[MAX_PATH_LENGTH];
@@ -1045,17 +1085,19 @@ void license_file_callback(void* data, const char* dir, const char* file) {
   // Ignore non rif content
   if ((strlen(file) < 4) || (strcasecmp(&file[strlen(file) - 4], ".rif") != 0))
     return;
+  if (license_data->error < 0)
+    return;
   if (license_data->copy_pass) {
     snprintf(path, sizeof(path), "%s/%s", dir, file);
-    SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0777);
-    if (fd > 0) {
-      int read = sceIoRead(fd, license_data->rif, RIF_SIZE);
-      if (read == RIF_SIZE) {
-        if (insert_rif(LICENSE_DB, license_data->rif) == 0)
-          license_data->copied++;
-      }
-      sceIoClose(fd);
+    int res = licenseImportRif(path, license_data->rif, RIF_SIZE,
+                               VITASHELL_ERROR_INTERNAL, &license_file_ops);
+    if (res < 0) {
+      debugPrintf("Import licenses: licenseImportRif(path=%s) returned 0x%08X\n",
+                  path, res);
+      license_data->error = res;
+      return;
     }
+    license_data->copied++;
     SetProgress(++license_data->processed, license_data->count);
   } else {
     license_data->count++;
@@ -1066,18 +1108,30 @@ void license_dir_callback(void* data, const char* dir, const char* subdir) {
   license_data_t *license_data = (license_data_t*)data;
   char path[MAX_PATH_LENGTH];
 
+  if (license_data->error < 0)
+    return;
+
   snprintf(path, sizeof(path), "%s/%s", dir, subdir);
+  int res;
   if (++license_data->cur_depth == license_data->max_depth)
-    parse_dir_with_callback(SCE_S_IFREG, path, license_file_callback, data);
+    res = parse_dir_with_callback(SCE_S_IFREG, path, license_file_callback, data);
   else
-    parse_dir_with_callback(SCE_S_IFDIR, path, license_dir_callback, data);
+    res = parse_dir_with_callback(SCE_S_IFDIR, path, license_dir_callback, data);
   license_data->cur_depth--;
+  if (res < 0 && license_data->error == 0) {
+    debugPrintf("Import licenses: parse_dir_with_callback(path=%s) returned "
+                "0x%08X\n", path, res);
+    license_data->error = res;
+  }
 }
 
 static int licenseScanCategory(void *context, const char *root) {
   license_data_t *license_data = context;
   int res = parse_dir_with_callback(SCE_S_IFDIR, root, license_dir_callback,
                                     license_data);
+  // A failure inside the category stops the import before the next category.
+  if (res == 0 && license_data->error < 0)
+    res = license_data->error;
   // The next category scans one level deeper regardless of this scan's result.
   license_data->max_depth++;
   return res;
@@ -1091,21 +1145,51 @@ static void licenseReportSkip(void *context, const char *root, int error) {
 
 static void licenseReportError(void *context, const char *root, int error) {
   (void)context;
-  debugPrintf("Import licenses: parse_dir_with_callback(path=%s) returned "
-              "0x%08X\n", root, error);
+  debugPrintf("Import licenses: licenseScanCategory(root=%s) returned 0x%08X\n",
+              root, error);
+}
+
+static int licensePrepareImport(void *context) {
+  license_data_t *license_data = context;
+
+  // Update thread
+  license_data->update_thid = createStartUpdateThread(license_data->count, 0);
+
+  // Reset the state that drives the copy pass
+  license_data->copy_pass = 1;
+  license_data->max_depth = 1;
+  license_data->error = 0;
+
+  // Create the DB if needed
+  SceUID fd = sceIoOpen(LICENSE_DB, SCE_O_RDONLY, 0777);
+  if (fd > 0) {
+    sceIoClose(fd);
+    return 0;
+  }
+  int db_error = create_db(LICENSE_DB, LICENSE_DB_SCHEMA);
+  if (db_error != 0) {
+    debugPrintf("Import licenses: create_db(path=%s) returned %d\n",
+                LICENSE_DB, db_error);
+    return VITASHELL_ERROR_INTERNAL;
+  }
+  return 0;
 }
 
 int license_thread(SceSize args, void *argp) {
-  SceUID thid = -1;
-  license_data_t license_data = { 0, 0, 0, 0, 0, 1, malloc(RIF_SIZE) };
+  license_data_t license_data = {
+    .max_depth = 1, .update_thid = -1, .rif = malloc(RIF_SIZE)
+  };
   static const char *const license_roots[] = {
     "ux0:license/app",
     "ux0:license/addcont",
   };
-  int scan_error = 0;
+  int import_error = 0;
 
-  if (license_data.rif == NULL)
+  if (license_data.rif == NULL) {
+    closeWaitDialog();
+    errorDialog(VITASHELL_ERROR_INTERNAL);
     goto EXIT;
+  }
 
   // Lock power timers
   powerLock();
@@ -1114,42 +1198,20 @@ int license_thread(SceSize args, void *argp) {
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 0);
   sceKernelDelayThread(DIALOG_WAIT); // Needed to see the percentage
 
-  LicenseScanOps scan_ops = {
-    &license_data,
-    licenseScanCategory,
-    licenseReportSkip,
-    licenseReportError,
+  LicenseImportOps import_ops = {
+    .scan = {
+      &license_data,
+      licenseScanCategory,
+      licenseReportSkip,
+      licenseReportError,
+    },
+    .prepare_import = licensePrepareImport,
   };
 
   // NB: ux0:license access requires elevated permisions
-  if (licenseScanCategories(license_roots,
-                            sizeof(license_roots) / sizeof(license_roots[0]),
-                            &scan_ops, &scan_error) != LICENSE_SCAN_COMPLETED)
-    goto SCAN_DONE;
-
-  // Update thread
-  thid = createStartUpdateThread(license_data.count, 0);
-
-  // Create the DB if needed
-  SceUID fd = sceIoOpen(LICENSE_DB, SCE_O_RDONLY, 0777);
-  if (fd > 0) {
-    sceIoClose(fd);
-  } else {
-    int db_error = create_db(LICENSE_DB, LICENSE_DB_SCHEMA);
-    if (db_error != 0) {
-      debugPrintf("Import licenses: create_db(path=%s) returned %d\n",
-                  LICENSE_DB, db_error);
-      scan_error = VITASHELL_ERROR_INTERNAL;
-      goto SCAN_DONE;
-    }
-  }
-
-  // Insert the licenses
-  license_data.copy_pass = 1;
-  license_data.max_depth = 1;
-  if (licenseScanCategories(license_roots,
-                            sizeof(license_roots) / sizeof(license_roots[0]),
-                            &scan_ops, &scan_error) != LICENSE_SCAN_COMPLETED)
+  if (licenseImportCategories(license_roots,
+                              sizeof(license_roots) / sizeof(license_roots[0]),
+                              &import_ops, &import_error) != LICENSE_SCAN_COMPLETED)
     goto SCAN_DONE;
 
   // Set progress to 100%
@@ -1163,15 +1225,22 @@ int license_thread(SceSize args, void *argp) {
   goto EXIT;
 
 SCAN_DONE:
-  // Cancellation already closed the dialog and is not an error.
-  if (scan_error < 0) {
+  // Cancellation already closed the dialog and is not an error. A failure
+  // keeps every license imported so far and reports the count with the error.
+  if (import_error < 0) {
+    char imported_message[128];
+    char error_message[128];
+    snprintf(imported_message, sizeof(imported_message),
+             language_container[IMPORTED_LICENSES], license_data.copied);
+    snprintf(error_message, sizeof(error_message),
+             language_container[ERROR], import_error);
     closeWaitDialog();
-    errorDialog(scan_error);
+    infoDialog("%s\n%s", imported_message, error_message);
   }
 
 EXIT:
-  if (thid >= 0)
-    sceKernelWaitThreadEnd(thid, NULL, NULL);
+  if (license_data.update_thid >= 0)
+    sceKernelWaitThreadEnd(license_data.update_thid, NULL, NULL);
 
   // Unlock power timers
   powerUnlock();

@@ -898,6 +898,308 @@ static int testLicenseScanCancellationIsNotAnError(void) {
   return 0;
 }
 
+/* Arbitrary distinct error marker for licenseImportRif's short-read report. */
+#define SHORT_READ_ERROR ((int)0x80020130)
+
+typedef struct {
+  int prepare_calls;
+  int prepare_error;
+  int copy_pass;
+  int scan_calls;
+  int copy_calls;
+  char scanned_roots[8][64];
+  int copied;
+  int imports_per_root;
+  int fail_on_count_call;
+  int fail_on_copy_call;
+  int fail_error;
+  int skip_every_root;
+  int error_reports;
+} LicenseImportFake;
+
+static int fakeImportScanCategory(void *context, const char *root) {
+  LicenseImportFake *fake = context;
+  if (fake->scan_calls < (int)ARRAY_SIZE(fake->scanned_roots))
+    snprintf(fake->scanned_roots[fake->scan_calls],
+             sizeof(fake->scanned_roots[0]), "%s", root);
+  fake->scan_calls++;
+  if (!fake->copy_pass) {
+    if (fake->fail_on_count_call == fake->scan_calls)
+      return fake->fail_error;
+    if (fake->skip_every_root)
+      return LICENSE_SCAN_NOT_FOUND;
+    return 0;
+  }
+  fake->copy_calls++;
+  if (fake->fail_on_copy_call == fake->copy_calls)
+    return fake->fail_error;
+  fake->copied += fake->imports_per_root;
+  return 0;
+}
+
+static int fakePrepareImport(void *context) {
+  LicenseImportFake *fake = context;
+  fake->prepare_calls++;
+  fake->copy_pass = 1;
+  return fake->prepare_error;
+}
+
+static void fakeImportReportSkip(void *context, const char *root, int error) {
+  (void)context; (void)root; (void)error;
+}
+
+static void fakeImportReportError(void *context, const char *root, int error) {
+  LicenseImportFake *fake = context;
+  (void)root;
+  (void)error;
+  fake->error_reports++;
+}
+
+static LicenseImportOps licenseImportOps(LicenseImportFake *fake) {
+  LicenseImportOps ops = {
+    .scan = {
+      fake,
+      fakeImportScanCategory,
+      fakeImportReportSkip,
+      fakeImportReportError,
+    },
+    .prepare_import = fakePrepareImport,
+  };
+  return ops;
+}
+
+static int testLicenseImportSuccessRunsPrepareOnceAndBothPasses(void) {
+  LicenseImportFake fake = { .imports_per_root = 3 };
+  LicenseImportOps ops = licenseImportOps(&fake);
+  int import_error = -1;
+
+  CHECK(licenseImportCategories(license_roots, ARRAY_SIZE(license_roots),
+                                &ops, &import_error) == LICENSE_SCAN_COMPLETED);
+  CHECK(fake.prepare_calls == 1);
+  CHECK(fake.scan_calls == 4);
+  CHECK(fake.copy_calls == 2);
+  CHECK(fake.copied == 6);
+  CHECK(fake.error_reports == 0);
+  CHECK(import_error == 0);
+  return 0;
+}
+
+static int testLicenseImportCountingFailurePreventsImport(void) {
+  const int permission_error = 0x8001000D; /* EACCES */
+  LicenseImportFake fake = { .fail_on_count_call = 2, .fail_error = permission_error };
+  LicenseImportOps ops = licenseImportOps(&fake);
+  int import_error = 0;
+
+  CHECK(licenseImportCategories(license_roots, ARRAY_SIZE(license_roots),
+                                &ops, &import_error) == LICENSE_SCAN_FAILED);
+  CHECK(fake.prepare_calls == 0);
+  CHECK(fake.copy_calls == 0);
+  CHECK(fake.copied == 0);
+  CHECK(import_error == permission_error);
+  return 0;
+}
+
+static int testLicenseImportPrepareFailurePreventsImport(void) {
+  const int permission_error = 0x8001000D; /* EACCES */
+  LicenseImportFake fake = { .prepare_error = permission_error };
+  LicenseImportOps ops = licenseImportOps(&fake);
+  int import_error = -1;
+
+  CHECK(licenseImportCategories(license_roots, ARRAY_SIZE(license_roots),
+                                &ops, &import_error) == LICENSE_SCAN_FAILED);
+  CHECK(fake.prepare_calls == 1);
+  CHECK(fake.scan_calls == 2);
+  CHECK(import_error == permission_error);
+  return 0;
+}
+
+static int testLicenseImportCopyFailureRetainsImports(void) {
+  const int permission_error = 0x8001000D; /* EACCES */
+  LicenseImportFake fake = {
+    .imports_per_root = 3,
+    .fail_on_copy_call = 2,
+    .fail_error = permission_error,
+  };
+  LicenseImportOps ops = licenseImportOps(&fake);
+  int import_error = 0;
+
+  CHECK(licenseImportCategories(license_roots, ARRAY_SIZE(license_roots),
+                                &ops, &import_error) == LICENSE_SCAN_FAILED);
+  CHECK(fake.prepare_calls == 1);
+  CHECK(fake.copy_calls == 2);
+  CHECK(fake.copied == 3);
+  CHECK(import_error == permission_error);
+  return 0;
+}
+
+static int testLicenseImportCountingCancellationSkipsImport(void) {
+  LicenseImportFake fake = { .fail_on_count_call = 1, .fail_error = 1 };
+  LicenseImportOps ops = licenseImportOps(&fake);
+  int import_error = -1;
+
+  CHECK(licenseImportCategories(license_roots, ARRAY_SIZE(license_roots),
+                                &ops, &import_error) == LICENSE_SCAN_CANCELED);
+  CHECK(fake.prepare_calls == 0);
+  CHECK(fake.copy_calls == 0);
+  CHECK(import_error == 0);
+  return 0;
+}
+
+static int testLicenseImportAbsentCategoryIsSkippedInBothPasses(void) {
+  LicenseImportFake fake = { .skip_every_root = 1 };
+  LicenseImportOps ops = licenseImportOps(&fake);
+
+  CHECK(licenseImportCategories(license_roots, ARRAY_SIZE(license_roots),
+                                &ops, NULL) == LICENSE_SCAN_COMPLETED);
+  CHECK(fake.prepare_calls == 1);
+  CHECK(fake.scan_calls == 4);
+  CHECK(fake.copied == 0);
+  CHECK(fake.error_reports == 0);
+  return 0;
+}
+
+typedef struct {
+  int open_result;
+  int read_result;
+  int close_result;
+  int insert_result;
+  int read_calls;
+  int close_calls;
+  int insert_calls;
+  char opened_path[64];
+  const void *read_buffer;
+  size_t read_size;
+} LicenseFileFake;
+
+static int fakeLicenseOpen(void *context, const char *path) {
+  LicenseFileFake *fake = context;
+  snprintf(fake->opened_path, sizeof(fake->opened_path), "%s", path);
+  return fake->open_result;
+}
+
+static int fakeLicenseRead(void *context, int fd, void *buffer, size_t size) {
+  LicenseFileFake *fake = context;
+  (void)fd;
+  fake->read_buffer = buffer;
+  fake->read_size = size;
+  fake->read_calls++;
+  return fake->read_result;
+}
+
+static int fakeLicenseClose(void *context, int fd) {
+  LicenseFileFake *fake = context;
+  (void)fd;
+  fake->close_calls++;
+  return fake->close_result;
+}
+
+static int fakeLicenseInsert(void *context, const uint8_t *rif) {
+  LicenseFileFake *fake = context;
+  (void)rif;
+  fake->insert_calls++;
+  return fake->insert_result;
+}
+
+static LicenseFileOps licenseFileOps(LicenseFileFake *fake) {
+  LicenseFileOps ops = {
+    fake,
+    fakeLicenseOpen,
+    fakeLicenseRead,
+    fakeLicenseClose,
+    fakeLicenseInsert,
+  };
+  return ops;
+}
+
+static int testLicenseImportRifSuccess(void) {
+  LicenseFileFake fake = { .open_result = 3, .read_result = 512 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512] = { 0 };
+
+  CHECK(licenseImportRif("ux0:license/app/T/r.rif", rif, sizeof(rif),
+                         SHORT_READ_ERROR, &ops) == 0);
+  CHECK(strcmp(fake.opened_path, "ux0:license/app/T/r.rif") == 0);
+  CHECK(fake.read_calls == 1);
+  CHECK(fake.read_size == sizeof(rif));
+  CHECK(fake.read_buffer == rif);
+  CHECK(fake.close_calls == 1);
+  CHECK(fake.insert_calls == 1);
+  return 0;
+}
+
+static int testLicenseImportRifOpenFailureStopsBeforeRead(void) {
+  LicenseFileFake fake = { .open_result = -5 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512];
+
+  CHECK(licenseImportRif("ux0:license/app/T/a.rif", rif, sizeof(rif),
+                         SHORT_READ_ERROR, &ops) == -5);
+  CHECK(fake.read_calls == 0);
+  CHECK(fake.close_calls == 0);
+  CHECK(fake.insert_calls == 0);
+  return 0;
+}
+
+static int testLicenseImportRifReadFailureStillCloses(void) {
+  LicenseFileFake fake = { .open_result = 3, .read_result = -7 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512] = { 0 };
+
+  CHECK(licenseImportRif("p", rif, sizeof(rif), SHORT_READ_ERROR,
+                         &ops) == -7);
+  CHECK(fake.read_calls == 1);
+  CHECK(fake.close_calls == 1);
+  CHECK(fake.insert_calls == 0);
+  return 0;
+}
+
+static int testLicenseImportRifShortReadIsReported(void) {
+  LicenseFileFake fake = { .open_result = 3, .read_result = 100 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512] = { 0 };
+
+  CHECK(licenseImportRif("p", rif, sizeof(rif), SHORT_READ_ERROR,
+                         &ops) == SHORT_READ_ERROR);
+  CHECK(fake.close_calls == 1);
+  CHECK(fake.insert_calls == 0);
+  return 0;
+}
+
+static int testLicenseImportRifCloseFailureIsReported(void) {
+  LicenseFileFake fake = { .open_result = 3, .read_result = 512,
+                           .close_result = -9 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512] = { 0 };
+
+  CHECK(licenseImportRif("p", rif, sizeof(rif), SHORT_READ_ERROR,
+                         &ops) == -9);
+  CHECK(fake.insert_calls == 0);
+  return 0;
+}
+
+static int testLicenseImportRifInsertFailureIsReported(void) {
+  LicenseFileFake fake = { .read_result = 512, .insert_result = -11 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512] = { 0 };
+
+  CHECK(licenseImportRif("p", rif, sizeof(rif), SHORT_READ_ERROR,
+                         &ops) == -11);
+  CHECK(fake.insert_calls == 1);
+  return 0;
+}
+
+static int testLicenseImportRifReadErrorWinsOverCloseError(void) {
+  LicenseFileFake fake = { .read_result = -7, .close_result = -9 };
+  LicenseFileOps ops = licenseFileOps(&fake);
+  uint8_t rif[512] = { 0 };
+
+  CHECK(licenseImportRif("p", rif, sizeof(rif), SHORT_READ_ERROR,
+                         &ops) == -7);
+  CHECK(fake.close_calls == 1);
+  return 0;
+}
+
+
 int main(void) {
   int (*tests[])(void) = {
     testPsmContentIdParsing,
@@ -933,6 +1235,19 @@ int main(void) {
     testLicenseScanGenuineFailureStopsAndReports,
     testLicenseScanFailureStopsBeforeLaterCategories,
     testLicenseScanCancellationIsNotAnError,
+    testLicenseImportSuccessRunsPrepareOnceAndBothPasses,
+    testLicenseImportCountingFailurePreventsImport,
+    testLicenseImportPrepareFailurePreventsImport,
+    testLicenseImportCopyFailureRetainsImports,
+    testLicenseImportCountingCancellationSkipsImport,
+    testLicenseImportAbsentCategoryIsSkippedInBothPasses,
+    testLicenseImportRifSuccess,
+    testLicenseImportRifOpenFailureStopsBeforeRead,
+    testLicenseImportRifReadFailureStillCloses,
+    testLicenseImportRifShortReadIsReported,
+    testLicenseImportRifCloseFailureIsReported,
+    testLicenseImportRifInsertFailureIsReported,
+    testLicenseImportRifReadErrorWinsOverCloseError,
   };
 
   for (size_t i = 0; i < ARRAY_SIZE(tests); i++) {

@@ -259,3 +259,47 @@ LicenseScanResult licenseScanCategories(
   }
   return LICENSE_SCAN_COMPLETED;
 }
+
+int licenseImportRif(
+    const char *path,
+    uint8_t *rif,
+    size_t rif_size,
+    int short_read_error,
+    const LicenseFileOps *ops) {
+  int fd = ops->open_file(ops->context, path);
+  if (fd < 0)
+    return fd;
+
+  int read_result = ops->read_file(ops->context, fd, rif, rif_size);
+  int close_result = ops->close_file(ops->context, fd);
+
+  if (read_result < 0)
+    return read_result;
+  if ((size_t)read_result != rif_size)
+    return short_read_error;
+  if (close_result < 0)
+    return close_result;
+
+  return ops->insert_rif(ops->context, rif);
+}
+
+LicenseScanResult licenseImportCategories(
+    const char *const *roots, int root_count,
+    const LicenseImportOps *ops, int *import_error) {
+  LicenseScanResult result = licenseScanCategories(
+      roots, root_count, &ops->scan, import_error);
+  /* A counting failure or cancellation must never start the copy pass. */
+  if (result != LICENSE_SCAN_COMPLETED)
+    return result;
+
+  if (ops->prepare_import != NULL) {
+    int prepare_error = ops->prepare_import(ops->scan.context);
+    if (prepare_error < 0) {
+      if (import_error != NULL)
+        *import_error = prepare_error;
+      return LICENSE_SCAN_FAILED;
+    }
+  }
+
+  return licenseScanCategories(roots, root_count, &ops->scan, import_error);
+}
