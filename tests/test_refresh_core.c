@@ -18,6 +18,7 @@ typedef struct {
   char rename_sources[4][64];
   char rename_destinations[4][64];
   RefreshPromotionResult promotion;
+  const char *expected_promotion_path;
   int promotion_calls;
   int report_calls;
   int remove_results[4];
@@ -41,7 +42,10 @@ static int fakeRename(void *context, const char *source, const char *destination
 
 static RefreshPromotionResult fakePromote(void *context, const char *path) {
   TransactionFake *fake = context;
-  if (strcmp(path, "stage") != 0) {
+  const char *expected = fake->expected_promotion_path != NULL
+                             ? fake->expected_promotion_path
+                             : "stage";
+  if (strcmp(path, expected) != 0) {
     RefreshPromotionResult unexpected_path = { -999, 0, 0 };
     return unexpected_path;
   }
@@ -262,6 +266,73 @@ static int testPreStagedDlcDoesNotStageAgain(void) {
   CHECK(strcmp(fake.rename_sources[0], "stage") == 0);
   CHECK(strcmp(fake.rename_destinations[0], "original") == 0);
   CHECK(fake.remove_calls == 0);
+  return 0;
+}
+
+static int testPreStagedCmaPromotionsCleanExactTitlePath(void) {
+  const char *staging_paths[] = {
+    "ux0:pspemu/temp/game/PSP/GAME/ULUS12345",
+    "ux0:temp/game/PCSG00001",
+  };
+
+  for (size_t i = 0; i < ARRAY_SIZE(staging_paths); i++) {
+    TransactionFake fake = {
+      .promotion = { 0, 0, 1 },
+      .expected_promotion_path = staging_paths[i],
+    };
+    RefreshResults results = { 0 };
+    RefreshTransactionOps ops = transactionOps(&fake);
+
+    CHECK(refreshPromoteStaged(&results, "original", staging_paths[i], &ops,
+                               &operation_names) ==
+          REFRESH_TRANSACTION_PROMOTED);
+    CHECK(fake.rename_calls == 0);
+    CHECK(fake.promotion_calls == 1);
+    CHECK(fake.remove_calls == 1);
+    CHECK(strcmp(fake.remove_paths[0], staging_paths[i]) == 0);
+    CHECK(results.refreshed == 1);
+  }
+  return 0;
+}
+
+static int testPreStagedCmaCommittedErrorCleansWithoutRestore(void) {
+  const char *staging = "ux0:temp/game/PCSG00001";
+  TransactionFake fake = {
+    .promotion = { -108, 0, 1 },
+    .expected_promotion_path = staging,
+  };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = transactionOps(&fake);
+
+  CHECK(refreshPromoteStaged(&results, "ux0:psm/PCSG00001", staging, &ops,
+                             &operation_names) ==
+        REFRESH_TRANSACTION_COMMITTED_WITH_ERROR);
+  CHECK(fake.rename_calls == 0);
+  CHECK(fake.remove_calls == 1);
+  CHECK(strcmp(fake.remove_paths[0], staging) == 0);
+  CHECK(results.refreshed == 1);
+  CHECK(results.first_promotion_error == -108);
+  return 0;
+}
+
+static int testPreStagedCmaFailureRestoresWithoutCleanup(void) {
+  const char *staging = "ux0:pspemu/temp/game/PSP/GAME/ULUS12345";
+  TransactionFake fake = {
+    .promotion = { -109, 0, 0 },
+    .expected_promotion_path = staging,
+  };
+  RefreshResults results = { 0 };
+  RefreshTransactionOps ops = transactionOps(&fake);
+
+  CHECK(refreshPromoteStaged(&results, "ux0:pspemu/PSP/GAME/ULUS12345",
+                             staging, &ops, &operation_names) ==
+        REFRESH_TRANSACTION_RESTORED);
+  CHECK(fake.rename_calls == 1);
+  CHECK(strcmp(fake.rename_sources[0], staging) == 0);
+  CHECK(strcmp(fake.rename_destinations[0],
+               "ux0:pspemu/PSP/GAME/ULUS12345") == 0);
+  CHECK(fake.remove_calls == 0);
+  CHECK(results.refreshed == 0);
   return 0;
 }
 
@@ -665,6 +736,9 @@ int main(void) {
     testRestoreFailureBlocksReuse,
     testPostCommitCleanupFailureDoesNotRestore,
     testPreStagedDlcDoesNotStageAgain,
+    testPreStagedCmaPromotionsCleanExactTitlePath,
+    testPreStagedCmaCommittedErrorCleansWithoutRestore,
+    testPreStagedCmaFailureRestoresWithoutCleanup,
     testErrorPriorityAndStickiness,
     testWorkBinOpenFailureDoesNothingElse,
     testWorkBinFullWriteIsCommitted,

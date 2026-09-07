@@ -441,6 +441,28 @@ static int removeRefreshPath(void *context, const char *path) {
   return removePath(path, NULL);
 }
 
+typedef struct {
+  const char *root;
+  const char *titleid;
+  int type;
+} CmaRefreshContext;
+
+static RefreshPromotionResult promoteCmaRefreshPath(void *context,
+                                                    const char *path) {
+  CmaRefreshContext *cma = context;
+  PromoteAppResult promotion;
+  RefreshPromotionResult result;
+
+  promotion = promoteCmaWithStatus(cma->root, cma->titleid, cma->type);
+  debugPrintf("Refresh LiveArea: CMA promotion(root=%s, titleid=%s, "
+              "staging=%s, type=%d) returned 0x%08X\n",
+              cma->root, cma->titleid, path, cma->type, promotion.error);
+  result.error = promotion.error;
+  result.work_bin_error = 0;
+  result.committed = promotion.committed;
+  return result;
+}
+
 static const RefreshTransactionOps refresh_ops = {
   NULL,
   renameRefreshPath,
@@ -464,6 +486,39 @@ static const RefreshOperationNames dlc_operations = {
   "DLC work.bin preparation",
   "DLC staging cleanup",
 };
+
+static const RefreshOperationNames psp_operations = {
+  "PSP staging rename",
+  "PSP promotion",
+  "PSP restore rename",
+  "PSP work.bin preparation",
+  "PSP staging cleanup",
+};
+
+static const RefreshOperationNames psm_operations = {
+  "PSM staging rename",
+  "PSM promotion",
+  "PSM restore rename",
+  "PSM work.bin preparation",
+  "PSM staging cleanup",
+};
+
+static RefreshTransactionResult promoteCmaStaged(
+    refresh_data_t *refresh_data, const char *source, const char *staging,
+    const char *root, const char *titleid, int type,
+    const RefreshOperationNames *operations) {
+  CmaRefreshContext context = { root, titleid, type };
+  RefreshTransactionOps ops = {
+    &context,
+    renameRefreshPath,
+    promoteCmaRefreshPath,
+    logRefreshError,
+    removeRefreshPath,
+  };
+
+  return refreshPromoteStaged(&refresh_data->results, source, staging,
+                              &ops, operations);
+}
 
 static void stageAndRefresh(refresh_data_t *refresh_data, const char *source,
                             const char *staging) {
@@ -713,31 +768,28 @@ void psp_callback(void* data, const char* dir, const char* subdir) {
               if (stage_res < 0) {
                 recordRefreshError(refresh_data, stage_res, "PSP staging rename", path);
               } else {
-                PromoteAppResult promotion = promoteCmaWithStatus(
-                    PSP_TEMP, discid, SCE_PKG_TYPE_PSP);
+                RefreshTransactionResult transaction = promoteCmaStaged(
+                    refresh_data, path, promote_game_folder, PSP_TEMP, discid,
+                    SCE_PKG_TYPE_PSP, &psp_operations);
 
-                sceClibPrintf("eboot_gen: %x, promote %x\n", eboot_gen, promotion.error);
+                sceClibPrintf("eboot_gen: %x, promote transaction %d\n",
+                              eboot_gen, transaction);
 
-                if (promotion.error == 0 || promotion.committed) {
-                  refresh_data->results.refreshed++;
-                  if (promotion.error < 0) {
-                    if (refresh_data->results.first_promotion_error == 0)
-                      refresh_data->results.first_promotion_error = promotion.error;
-                    recordRefreshError(refresh_data, promotion.error,
-                                       "PSP post-promotion cleanup", promote_game_folder);
-                  }
-                } else {
-                  if (refresh_data->results.first_promotion_error == 0)
-                    refresh_data->results.first_promotion_error = promotion.error;
-                  recordRefreshError(refresh_data, promotion.error, "PSP promotion", promote_game_folder);
-                  int restore_res = sceIoRename(promote_game_folder, path);
-                  recordRefreshError(refresh_data, restore_res, "PSP restore rename", promote_game_folder);
-                  if (restore_res < 0) {
-                    if (refresh_data->results.restore_error == 0)
-                      refresh_data->results.restore_error = restore_res;
-                  } else {
-                    removePath(PSP_TEMP, NULL); // delete what was created
-                  }
+                if (transaction == REFRESH_TRANSACTION_PROMOTED ||
+                    transaction == REFRESH_TRANSACTION_COMMITTED_WITH_ERROR ||
+                    transaction == REFRESH_TRANSACTION_RESTORED) {
+                  int license_cleanup = sceIoRemove(promote_license_rif);
+                  recordRefreshError(refresh_data, license_cleanup,
+                                     "PSP license staging cleanup",
+                                     promote_license_rif);
+
+                  /*
+                    Remove only empty scaffolding. If unrelated staging data
+                    exists these calls safely fail instead of deleting it.
+                  */
+                  sceIoRmdir(promote_psp_license_folder);
+                  sceIoRmdir(promote_psp_game_folder);
+                  sceIoRmdir(promote_psp_folder);
                 }
               }
               
@@ -821,25 +873,8 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
         recordRefreshError(refresh_data, stage_res, "PSM staging rename", path);
       } else {
         // Finally call promote
-        PromoteAppResult promotion = promoteCmaWithStatus(
-            PSM_TEMP, titleid, SCE_PKG_TYPE_PSM);
-        if (promotion.error == 0 || promotion.committed) {
-          refresh_data->results.refreshed++;
-          if (promotion.error < 0) {
-            if (refresh_data->results.first_promotion_error == 0)
-              refresh_data->results.first_promotion_error = promotion.error;
-            recordRefreshError(refresh_data, promotion.error,
-                               "PSM post-promotion cleanup", promote_path);
-          }
-        } else {
-          if (refresh_data->results.first_promotion_error == 0)
-            refresh_data->results.first_promotion_error = promotion.error;
-          recordRefreshError(refresh_data, promotion.error, "PSM promotion", promote_path);
-          int restore_res = sceIoRename(promote_path, path);
-          recordRefreshError(refresh_data, restore_res, "PSM restore rename", promote_path);
-          if (restore_res < 0 && refresh_data->results.restore_error == 0)
-            refresh_data->results.restore_error = restore_res;
-        }
+        promoteCmaStaged(refresh_data, path, promote_path, PSM_TEMP, titleid,
+                         SCE_PKG_TYPE_PSM, &psm_operations);
       }
     } else if (eligibility_error < 0) {
       recordRefreshError(refresh_data, eligibility_error,
