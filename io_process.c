@@ -104,7 +104,12 @@ static int update_thread(SceSize args_size, UpdateArguments *args) {
       last_micros = cur_micros;
       
       if (delta_micros > 0 && current_value > previous_value) {
-        kbs = (double)(current_value - previous_value) / 1024.0;
+        // True KB/s = bytes / 1024 / elapsed_seconds. The previous form
+        // omitted the time divisor, so with a ~2s sample window the
+        // displayed rate was roughly double the real throughput and
+        // labelled per-second.
+        kbs = (double)(current_value - previous_value) / 1024.0
+              / (delta_micros / 1000000.0);
         previous_value = current_value;
         
         char msg[64];
