@@ -81,10 +81,10 @@ int pfsIsPatchDirectory(const char *directory) {
   while (length > 0 && directory[length - 1] == '/')
     length--;
 
-  return (length == strlen("ux0:patch") &&
-          strncasecmp(directory, "ux0:patch", length) == 0) ||
-         (length == strlen("grw0:patch") &&
-          strncasecmp(directory, "grw0:patch", length) == 0);
+  return ((length == strlen("ux0:patch") &&
+           strncasecmp(directory, "ux0:patch", length) == 0) ||
+          (length == strlen("grw0:patch") &&
+           strncasecmp(directory, "grw0:patch", length) == 0));
 }
 
 static int mountCandidate(const char *directory, const char *entry,

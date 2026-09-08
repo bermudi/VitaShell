@@ -1188,7 +1188,11 @@ int license_thread(SceSize args, void *argp) {
   if (license_data.rif == NULL) {
     closeWaitDialog();
     errorDialog(VITASHELL_ERROR_INTERNAL);
-    goto EXIT;
+    // NB: return directly instead of goto EXIT. EXIT releases the power
+    // lock, which this path never acquired; unlocking here would steal one
+    // reference from an overlapping operation (e.g. FTP + license import)
+    // and drop the PS-button guard while work remains active.
+    return sceKernelExitDeleteThread(0);
   }
 
   // Lock power timers
