@@ -38,6 +38,52 @@ Touching this path, watch: staging collisions, rename failures, promotion/restor
 - Logic may: (1) preserve non-zero existing, (2) remove all-zero homebrew placeholder, (3) reconstruct missing from `ux0:license/license.db` when possible.
 - Safety: treat as user metadata; atomic write via temp file → verify full 512 bytes → replace; remove failed temp file; propagate errors; never leave truncated RIF. If RIF can't be recovered, surface the condition.
 
+## The "committed = 1" assumption
+
+Every "don't restore after commit" decision in `refreshPromoteStaged`
+(`refresh_core.c`) and `package_installer.c` flows from one flag:
+`promoteAppWithStatus` / `promoteCmaWithStatus` set `committed = 1` the
+moment `scePromoterUtilityPromotePkgWithRif` / `scePromoterUtilityPromoteImport`
+returns `>= 0`, before teardown (`Exit`, `UnloadModuleInternal`, `unloadScePaf`).
+If the promoter could return success while the install was still pending in
+SceShell, a later teardown failure would be misclassified as
+"committed-with-error" and the original would not be restored — even though
+nothing was actually installed.
+
+Evidence that sync=1 means "installed by the time the call returns":
+
+- **API contract.** The vitasdk header documents the `sync` parameter of
+  `scePromoterUtilityPromotePkgWithRif` / `scePromoterUtilityPromotePkg` as
+  "pass 0 for asynchronous, 1 for synchronous." We pass 1. There is no
+  separate `GetState`/`GetResult` dance for sync mode — those exist for the
+  async path (and the `*ASync` variants added in FW 3.200).
+- **`PromoteImport` is inherently synchronous.** It has no sync parameter; a
+  distinct `scePromoterUtilityPromoteImportASync` was added in FW 3.200. So
+  the CMA path's `committed = 1` is on firmer ground than the pkg path's.
+- **Independent production usage.** pkgi/pkgj (the most widely used on-device
+  package downloader) calls `PromotePkgWithRif(path, 1)`, treats `== 0` as
+  fully installed, and never polls `GetState`/`GetResult`. This has held
+  across firmware 3.60–3.74 on many devices for years.
+- **Architecture (henkaku wiki).** ScePromoterUtil is a thin IPC wrapper
+  around SceShellSvc; SceShell performs the actual file moves, app.db update,
+  and LiveArea bubble. In sync mode the usermode call blocks on the IPC reply.
+  The existence of `promoter_heartbeat` and the `*ASync` variants is
+  consistent with: the underlying SceShell operation is async, but sync=1
+  blocks the caller until it completes.
+
+What this does **not** prove: that SceShell has fully flushed app.db to disk
+by the time the sync IPC reply arrives. That is firmware-internal and cannot
+be settled by source alone. The evidence moves the assumption from
+"unverified" to "well-supported by API contract + independent production
+usage + RE knowledge," but the final confirmation is the staged hardware
+test: a Refresh LiveArea on `GBVXTST01` that yields `Refreshed 1 item` and a
+visible bubble means the sync promotion committed.
+
+Do not add a `scePromoterUtilityCheckExist` call to the promote path to
+"verify" the commit — it would add a new failure mode to a safety-critical
+path for no real gain. If a diagnostic is ever wanted, log it only, never
+branch on it.
+
 ## NoNpDrm note
 
 Repo has no explicit NoNpDrm integration and does **not** scan `ux0:nonpdrm/license/` during refresh. Don't add new license search paths without justifying why VitaShell should own it, how conflicts/accounts are handled, and upstream compatibility.

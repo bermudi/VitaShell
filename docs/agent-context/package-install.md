@@ -35,6 +35,18 @@ Treat an already-absent staging path as successful post-commit cleanup because
 nothing remains to remove. Other stat/removal errors remain observable in
 `ux0:data/vitashell_log.txt`.
 
+## The "promotion committed" assumption
+
+"Once promotion commits, the staged folder becomes `DISPOSABLE`; post-commit
+teardown errors must not trigger restoration" rests on the same assumption as
+the refresh path: `promoteAppWithStatus` sets `committed = 1` the moment
+`scePromoterUtilityPromotePkgWithRif(path, 1)` returns `>= 0`. See
+`docs/agent-context/refresh.md` → "The 'committed = 1' assumption" for the
+full evidence chain (API contract, `PromoteImport` sync semantics,
+independent pkgi/pkgj usage, SceShellSvc IPC architecture) and what it does
+and does not prove. Hardware confirmation is the staged Refresh LiveArea
+test on `GBVXTST01`.
+
 ## Updater handoff
 
 The updater first promotes the small `VSUPDATER` application from disposable
