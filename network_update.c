@@ -31,7 +31,7 @@
 #define BASE_ADDRESS "https://raw.githubusercontent.com/bermudi/VitaShell/master/release"
 #define VERSION_URL "/version.bin"
 #define VITASHELL_UPDATE_FILE "ux0:VitaShell/internal/VitaShell.vpk"
-#define VITASHELL_VERSION_FILE "ux0:VitaShell/internal/version.bin"
+#define VITASHELL_VERSION_FILE_FORMAT "ux0:VitaShell/internal/version-%08X.bin"
 
 extern unsigned char _binary_resources_updater_eboot_bin_start;
 extern unsigned char _binary_resources_updater_eboot_bin_size;
@@ -74,11 +74,20 @@ static int autoCloseNoUpdateThread(SceSize args, void *argp) {
 int network_update_thread(SceSize args, void *argp) {
   int64_t size = 0;
   long code = 0;
+  uint32_t version = 0;
+  int version_valid = 0;
+  char version_file[64];
+  snprintf(version_file, sizeof(version_file), VITASHELL_VERSION_FILE_FORMAT,
+           (unsigned int)sceKernelGetThreadId());
   // Prepare the update check URL
   // NB: Content-Length is unreliable (chunked transfers report -1), so the
   // HEAD request is only a reachability hint. The actual version payload is
   // validated by size after download.
-  if (getDownloadFileInfo(BASE_ADDRESS VERSION_URL, &size, NULL, &code) >= 0 && code == 200) {
+  if (getDownloadFileInfo(BASE_ADDRESS VERSION_URL, &size, NULL, &code) < 0 || code != 200) {
+    debugPrintf("VitaShell update: version HEAD check failed (code=%ld)\n", code);
+    goto EXIT;
+  }
+  {
     uint64_t value = 0;
 
     FileProcessParam param;
@@ -87,17 +96,22 @@ int network_update_thread(SceSize args, void *argp) {
     param.SetProgress = NULL;
     param.cancelHandler = NULL;
 
-    int res = downloadFile(BASE_ADDRESS VERSION_URL, VITASHELL_VERSION_FILE, &param);
-    if (res < 0)
-      goto EXIT;
-
-    // Read version
-    uint32_t version = 0;
-    if (ReadFile(VITASHELL_VERSION_FILE, &version, sizeof(uint32_t)) != sizeof(uint32_t)) {
-      sceIoRemove(VITASHELL_VERSION_FILE);
+    int res = downloadFile(BASE_ADDRESS VERSION_URL, version_file, &param);
+    if (res < 0) {
+      debugPrintf("VitaShell update: version download failed: 0x%08X\n", res);
+      sceIoRemove(version_file);
       goto EXIT;
     }
-    sceIoRemove(VITASHELL_VERSION_FILE);
+
+    // Read version
+    int read = ReadFile(version_file, &version, sizeof(uint32_t));
+    if (read != (int)sizeof(uint32_t)) {
+      debugPrintf("VitaShell update: version read failed (%d)\n", read);
+      sceIoRemove(version_file);
+      goto EXIT;
+    }
+    sceIoRemove(version_file);
+    version_valid = 1;
 
     // Only show update question if no dialog is running
     if (getDialogStep() == DIALOG_STEP_NONE) {
@@ -132,9 +146,13 @@ int network_update_thread(SceSize args, void *argp) {
   }
 
 EXIT:
-  // If no update dialog was shown and we're coming from manual check,
-  // show "no updates available" message
-  if (getDialogStep() == DIALOG_STEP_NONE) {
+  // Only report "no updates" after a successful four-byte version read
+  // confirms the remote version is not newer. HEAD/download/read failures
+  // (version_valid == 0) and the user-declined update path (version newer)
+  // fall through here as cancellation: no dialog, never masquerade as
+  // "no updates available".
+  if (version_valid && version <= VITASHELL_VERSION &&
+      getDialogStep() == DIALOG_STEP_NONE) {
     initMessageDialog(SCE_MSG_DIALOG_BUTTON_TYPE_OK, language_container[NO_UPDATES_AVAILABLE]);
     setDialogStep(DIALOG_STEP_UPDATE_NONE_AVAILABLE);
 
