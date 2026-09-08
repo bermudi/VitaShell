@@ -134,6 +134,7 @@ add_executable(VitaShell
   theme.c
   language.c
   utils.c
+  power_core.c
   elf.c
   sha1.c
   sha256.c

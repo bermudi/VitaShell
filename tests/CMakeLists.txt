@@ -23,3 +23,10 @@ add_vitashell_host_test(test_package_install_core
   test_package_install_core.c
   ../package_install_core.c
 )
+
+find_package(Threads REQUIRED)
+add_vitashell_host_test(test_power_core
+  test_power_core.c
+  ../power_core.c
+)
+target_link_libraries(test_power_core PRIVATE Threads::Threads)
