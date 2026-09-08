@@ -105,8 +105,9 @@ int network_update_thread(SceSize args, void *argp) {
 
     // Read version
     int read = ReadFile(version_file, &version, sizeof(uint32_t));
-    if (read != (int)sizeof(uint32_t)) {
-      debugPrintf("VitaShell update: version read failed (%d)\n", read);
+    if (value != sizeof(uint32_t) || read != (int)sizeof(uint32_t)) {
+      debugPrintf("VitaShell update: invalid version payload (transferred=%llu, read=%d)\n",
+                  (unsigned long long)value, read);
       sceIoRemove(version_file);
       goto EXIT;
     }
