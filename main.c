@@ -1475,7 +1475,12 @@ int main(int argc, const char *argv[]) {
   sceKernelCreateLwMutex(&dialog_mutex, "dialog_mutex", 2, 0, NULL);
 
   // Init VitaShell
-  initVitaShell();
+  int init_res = initVitaShell();
+  if (init_res < 0) {
+    debugPrintf("VitaShell initialization failed: 0x%08X\n", init_res);
+    finishVitaShell();
+    return init_res;
+  }
 
   // No custom config, in case they are damaged or unuseable
   readPad();
