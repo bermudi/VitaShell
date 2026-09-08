@@ -208,8 +208,18 @@ int initPowerTickThread(void) {
 
   powerStateInit(&power_state);
   SceUID thid = sceKernelCreateThread("power_tick_thread", power_tick_thread, 0x10000100, 0x40000, 0, 0, NULL);
-  if (thid >= 0)
-    sceKernelStartThread(thid, 0, NULL);
+  if (thid < 0) {
+    debugPrintf("Power management: thread creation failed: 0x%08X\n", thid);
+    return thid;
+  }
+  res = sceKernelStartThread(thid, 0, NULL);
+  if (res < 0) {
+    debugPrintf("Power management: thread startup failed: 0x%08X\n", res);
+    int cleanup = sceKernelDeleteThread(thid);
+    if (cleanup < 0)
+      debugPrintf("Power management: thread deletion failed: 0x%08X\n", cleanup);
+    return res;
+  }
   return 0;
 }
 
