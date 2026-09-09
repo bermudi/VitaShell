@@ -376,8 +376,12 @@ int installPackage(const char *file) {
   // Claim an empty staging directory. Never delete an occupied path: it may
   // contain a folder preserved after an earlier restore failure.
   res = sceIoMkdir(PACKAGE_DIR, 0777);
-  if (res < 0)
+  if (res < 0) {
+    if (res == (int)SCE_ERROR_ERRNO_EEXIST)
+      debugPrintf("Package install: staging %s occupied, kept (0x%08X)\n",
+                  PACKAGE_DIR, res);
     return res;
+  }
   staging = PACKAGE_STAGING_DISPOSABLE;
 
   // Open archive
@@ -571,6 +575,9 @@ int install_thread(SceSize args_size, InstallArguments *args) {
     // Update thread
     res = sceIoMkdir(PACKAGE_DIR, 0777);
     if (res < 0) {
+      if (res == (int)SCE_ERROR_ERRNO_EEXIST)
+        debugPrintf("Package install: staging %s occupied, kept (0x%08X)\n",
+                    PACKAGE_DIR, res);
       closeWaitDialog();
       errorDialog(res);
       goto EXIT;

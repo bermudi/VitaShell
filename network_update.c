@@ -171,8 +171,12 @@ EXIT:
 
 static int installUpdater(void) {
   int res = sceIoMkdir(PACKAGE_DIR, 0777);
-  if (res < 0)
+  if (res < 0) {
+    if (res == (int)SCE_ERROR_ERRNO_EEXIST)
+      debugPrintf("VitaShell update: staging %s occupied, kept (0x%08X)\n",
+                  PACKAGE_DIR, res);
     return res;
+  }
   PackageStagingOwnership staging = PACKAGE_STAGING_DISPOSABLE;
 
   // Make dir
@@ -242,6 +246,9 @@ int update_extract_thread(SceSize args, void *argp) {
   // reported rather than recursively deleted.
   res = sceIoMkdir(PACKAGE_DIR, 0777);
   if (res < 0) {
+    if (res == (int)SCE_ERROR_ERRNO_EEXIST)
+      debugPrintf("VitaShell update: staging %s occupied, kept (0x%08X)\n",
+                  PACKAGE_DIR, res);
     closeWaitDialog();
     errorDialog(res);
     goto EXIT;
