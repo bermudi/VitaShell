@@ -25,6 +25,7 @@
 #include "language.h"
 #include "utils.h"
 #include "bm.h"
+#include "power_core.h"
 
 SceCtrlData pad;
 Pad old_pad, current_pad, pressed_pad, released_pad, hold_pad, hold2_pad;
@@ -51,7 +52,8 @@ static int netdbg_sock = -1;
 static void *net_memory = NULL;
 static int net_init = -1;
 
-static int lock_power = 0;
+static PowerState power_state = { 0, 0 };
+static SceKernelLwMutexWork power_mutex;
 
 float easeOut(float x0, float x1, float a, float b) {
   float dx = (x1 - x0);
@@ -183,7 +185,11 @@ uint32_t getFreeSpaceColor(uint64_t free_size, uint64_t max_size) {
 
 static int power_tick_thread(SceSize args, void *argp) {
   while (1) {
-    if (lock_power > 0) {
+    int should_tick = 0;
+    sceKernelLockLwMutex(&power_mutex, 1, NULL);
+    should_tick = powerStateShouldTick(&power_state);
+    sceKernelUnlockLwMutex(&power_mutex, 1);
+    if (should_tick) {
       sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DISABLE_AUTO_SUSPEND);
     }
 
@@ -193,26 +199,53 @@ static int power_tick_thread(SceSize args, void *argp) {
   return 0;
 }
 
-void initPowerTickThread() {
+int initPowerTickThread(void) {
+  int res = sceKernelCreateLwMutex(&power_mutex, "power_mutex", 2, 0, NULL);
+  if (res < 0) {
+    debugPrintf("Power management: mutex creation failed: 0x%08X\n", res);
+    return res;
+  }
+
+  powerStateInit(&power_state);
   SceUID thid = sceKernelCreateThread("power_tick_thread", power_tick_thread, 0x10000100, 0x40000, 0, 0, NULL);
-  if (thid >= 0)
-    sceKernelStartThread(thid, 0, NULL);
+  if (thid < 0) {
+    debugPrintf("Power management: thread creation failed: 0x%08X\n", thid);
+    return thid;
+  }
+  res = sceKernelStartThread(thid, 0, NULL);
+  if (res < 0) {
+    debugPrintf("Power management: thread startup failed: 0x%08X\n", res);
+    int cleanup = sceKernelDeleteThread(thid);
+    if (cleanup < 0)
+      debugPrintf("Power management: thread deletion failed: 0x%08X\n", cleanup);
+    return res;
+  }
+  return 0;
 }
 
 void powerLock() {
-  if (!lock_power)
+  sceKernelLockLwMutex(&power_mutex, 1, NULL);
+  int acquire = powerStateLock(&power_state);
+  if (acquire)
     sceShellUtilLock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN);
-
-  lock_power++;
+  sceKernelUnlockLwMutex(&power_mutex, 1);
 }
 
 void powerUnlock() {
-  if (lock_power)
+  // Mirror powerLock(): only release the PS-button lock on the 1->0
+  // transition. The previous form called sceShellUtilUnlock() on every
+  // unlock, so when two operations overlapped (e.g. FTP server + VPK
+  // install) the first to finish dropped the PS-button guard while the
+  // second was still mid-write — exactly the window where a PS-button
+  // backgrounding can leave a half-installed package. All three users of
+  // the count (powerLock/powerUnlock/power_tick_thread) share power_mutex,
+  // and the shell lock/unlock transitions run while holding it, so
+  // overlapping holders cannot lose updates or release the guard early.
+  sceKernelLockLwMutex(&power_mutex, 1, NULL);
+  int release = powerStateUnlock(&power_state);
+  if (release)
     sceShellUtilUnlock(SCE_SHELL_UTIL_LOCK_TYPE_PS_BTN);
-
-  lock_power--;
-  if (lock_power < 0)
-    lock_power = 0;
+  sceKernelUnlockLwMutex(&power_mutex, 1);
 }
 
 void readPad() {

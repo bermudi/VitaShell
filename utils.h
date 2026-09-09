@@ -89,7 +89,7 @@ int getPartitionFreeSpace(const char *device, uint64_t *free_size, uint64_t *max
 uint32_t getFreeSpaceColor(uint64_t free_size, uint64_t max_size);
 
 // Power management helpers
-void initPowerTickThread(void);
+int initPowerTickThread(void);
 void powerLock(void);
 void powerUnlock(void);
 

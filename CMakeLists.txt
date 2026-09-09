@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.10)
 
+option(VITASHELL_HOST_TESTS "Build native host tests" OFF)
+if(VITASHELL_HOST_TESTS)
+  project(VitaShellHostTests C)
+  enable_testing()
+  add_subdirectory(tests)
+  return()
+endif()
+
 # VitaSDK defines
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   if(DEFINED ENV{VITASDK})
@@ -88,6 +96,7 @@ add_executable(VitaShell
   ${vitashell_res}
   main.c
   pfs.c
+  pfs_core.c
   main_context.c
   browser.c
   init.c
@@ -96,7 +105,9 @@ add_executable(VitaShell
   io_process.c
   makezip.c
   package_installer.c
+  package_install_core.c
   refresh.c
+  refresh_core.c
   network_update.c
   network_download.c
   context_menu.c
@@ -123,6 +134,7 @@ add_executable(VitaShell
   theme.c
   language.c
   utils.c
+  power_core.c
   elf.c
   sha1.c
   sha256.c

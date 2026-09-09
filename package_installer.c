@@ -19,6 +19,7 @@
 #include "main.h"
 #include "io_process.h"
 #include "package_installer.h"
+#include "package_install_core.h"
 #include "archive.h"
 #include "file.h"
 #include "message_dialog.h"
@@ -32,6 +33,44 @@
 extern char last_installed_titleid[12];
 
 INCLUDE_EXTERN_RESOURCE(head_bin);
+
+static int renamePackageStaging(void *context, const char *source,
+                                const char *destination) {
+  (void)context;
+  return sceIoRename(source, destination);
+}
+
+static int removePackageStaging(void *context, const char *path) {
+  (void)context;
+  SceIoStat stat;
+  int error = sceIoGetstat(path, &stat);
+  if (error == SCE_ERROR_ERRNO_ENOENT)
+    return 0;
+  if (error < 0)
+    return error;
+
+  error = removePath(path, NULL);
+  return error == SCE_ERROR_ERRNO_ENOENT ? 0 : error;
+}
+
+static int restorePackageFolder(PackageStagingOwnership *ownership,
+                                const char *source) {
+  int error = packageRestoreMovedSource(ownership, source, PACKAGE_DIR, NULL,
+                                        renamePackageStaging);
+  if (error < 0)
+    debugPrintf("Package install: restore failed from %s to %s: 0x%08X\n",
+                PACKAGE_DIR, source, error);
+  return error;
+}
+
+static int cleanupPackageStaging(PackageStagingOwnership ownership) {
+  int error = packageCleanupStaging(ownership, PACKAGE_DIR, NULL,
+                                    removePackageStaging);
+  if (error < 0)
+    debugPrintf("Package install: staging cleanup failed for %s: 0x%08X\n",
+                PACKAGE_DIR, error);
+  return error;
+}
 
 static int loadScePaf() {
     static uint32_t argp[] = { 0x180000, -1, -1, 1, -1, -1 };
@@ -60,8 +99,8 @@ static int unloadScePaf() {
     );
 }
 
-int promoteCma(const char *path, const char *titleid, int type) {
-  int res;
+PromoteAppResult promoteCmaWithStatus(const char *path, const char *titleid, int type) {
+  PromoteAppResult result = { 0, 0 };
   
   ScePromoterUtilityImportParams promoteArgs;
   memset(&promoteArgs,0x00,sizeof(ScePromoterUtilityImportParams));
@@ -70,69 +109,75 @@ int promoteCma(const char *path, const char *titleid, int type) {
   promoteArgs.type = type;
   promoteArgs.attribute = 0x1;
 
-  res = loadScePaf();
-  if (res < 0)
-    return res;
+  result.error = loadScePaf();
+  if (result.error < 0)
+    return result;
 
-  res = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
+  result.error = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
 
-  res = scePromoterUtilityInit();
-  if (res < 0)
-    return res;
+  result.error = scePromoterUtilityInit();
+  if (result.error < 0)
+    return result;
 
-  res = scePromoterUtilityPromoteImport(&promoteArgs);
-  if (res < 0)
-    return res;
+  result.error = scePromoterUtilityPromoteImport(&promoteArgs);
+  if (result.error < 0)
+    return result;
 
-  res = scePromoterUtilityExit();
-  if (res < 0)
-    return res;
+  result.committed = 1;
 
-  res = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
+  result.error = scePromoterUtilityExit();
+  if (result.error < 0)
+    return result;
 
-  res = unloadScePaf();
-  if (res < 0)
-    return res;
+  result.error = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
 
-  return res;
+  result.error = unloadScePaf();
+  return result;
+}
+
+int promoteCma(const char *path, const char *titleid, int type) {
+  return promoteCmaWithStatus(path, titleid, type).error;
+}
+
+PromoteAppResult promoteAppWithStatus(const char *path) {
+  PromoteAppResult result = { 0, 0 };
+
+  result.error = loadScePaf();
+  if (result.error < 0)
+    return result;
+
+  result.error = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
+
+  result.error = scePromoterUtilityInit();
+  if (result.error < 0)
+    return result;
+
+  result.error = scePromoterUtilityPromotePkgWithRif(path, 1);
+  if (result.error < 0)
+    return result;
+
+  result.committed = 1;
+
+  result.error = scePromoterUtilityExit();
+  if (result.error < 0)
+    return result;
+
+  result.error = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
+  if (result.error < 0)
+    return result;
+
+  result.error = unloadScePaf();
+  return result;
 }
 
 int promoteApp(const char *path) {
-  int res;
-
-  res = loadScePaf();
-  if (res < 0)
-    return res;
-
-  res = sceSysmoduleLoadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
-
-  res = scePromoterUtilityInit();
-  if (res < 0)
-    return res;
-
-  res = scePromoterUtilityPromotePkgWithRif(path, 1);
-  if (res < 0)
-    return res;
-
-  res = scePromoterUtilityExit();
-  if (res < 0)
-    return res;
-
-  res = sceSysmoduleUnloadModuleInternal(SCE_SYSMODULE_INTERNAL_PROMOTER_UTIL);
-  if (res < 0)
-    return res;
-
-  res = unloadScePaf();
-  if (res < 0)
-    return res;
-
-  return res;
+  return promoteAppWithStatus(path).error;
 }
 
 int deleteApp(const char *titleid) {
@@ -257,10 +302,6 @@ int makeHeadBin() {
   // Save title id for post-installation launching
   strcpy(last_installed_titleid, titleid);
 
-  // Enforce TITLE_ID format
-  if (TITLEID_FMT_CHECK(titleid))
-    return VITASHELL_ERROR_INVALID_TITLEID;
-
   // Get content id
   char contentid[48];
   memset(contentid, 0, sizeof(contentid));
@@ -269,8 +310,14 @@ int makeHeadBin() {
   // Free sfo buffer
   free(sfo_buffer);
 
+  // Enforce TITLE_ID format
+  if (TITLEID_FMT_CHECK(titleid))
+    return VITASHELL_ERROR_INVALID_TITLEID;
+
   // Allocate head.bin buffer
   uint8_t *head_bin = malloc((int)&_binary_resources_head_bin_size);
+  if (head_bin == NULL)
+    return VITASHELL_ERROR_NO_MEMORY;
   memcpy(head_bin, (void *)&_binary_resources_head_bin_start, (int)&_binary_resources_head_bin_size);
 
   // Write full title id
@@ -296,28 +343,53 @@ int makeHeadBin() {
   memcpy(&head_bin[len], hmac, 16);
 
   // Make dir
-  sceIoMkdir(PACKAGE_DIR "/sce_sys/package", 0777);
+  if (!checkFolderExist(PACKAGE_DIR "/sce_sys/package")) {
+    res = sceIoMkdir(PACKAGE_DIR "/sce_sys/package", 0777);
+    if (res < 0) {
+      free(head_bin);
+      return res;
+    }
+  }
 
   // Write head.bin
-  WriteFile(HEAD_BIN, head_bin, (int)&_binary_resources_head_bin_size);
+  int head_size = (int)&_binary_resources_head_bin_size;
+  res = WriteFile(HEAD_BIN, head_bin, head_size);
 
   free(head_bin);
 
+  if (res < 0 || res != head_size) {
+    // WriteFile() truncates on open, so a failed or short write leaves a
+    // partial head.bin. Remove it: a later run would mistake it for a valid
+    // one (checkFileExist() above) and promote with a corrupt head.bin.
+    sceIoRemove(HEAD_BIN);
+    return res < 0 ? res : VITASHELL_ERROR_INTERNAL;
+  }
   return 0;
 }
 
 
 int installPackage(const char *file) {
-  int res;
+  int res = 0;
+  int archive_open = 0;
+  PackageStagingOwnership staging = PACKAGE_STAGING_UNOWNED;
 
-  // Recursively clean up pkg directory
-  removePath(PACKAGE_DIR, NULL);
+  // Claim an empty staging directory. Never delete an occupied path: it may
+  // contain a folder preserved after an earlier restore failure.
+  res = sceIoMkdir(PACKAGE_DIR, 0777);
+  if (res < 0) {
+    if (res == (int)SCE_ERROR_ERRNO_EEXIST)
+      debugPrintf("Package install: staging %s occupied, kept (0x%08X)\n",
+                  PACKAGE_DIR, res);
+    return res;
+  }
+  staging = PACKAGE_STAGING_DISPOSABLE;
 
   // Open archive
   archiveClearPassword();
   res = archiveOpen(file);
   if (res < 0)
-    return res;
+    goto EXIT;
+  archive_open = 1;
 
   // Src path
   char src_path[MAX_PATH_LENGTH];
@@ -327,24 +399,34 @@ int installPackage(const char *file) {
   // Extract process
   res = extractArchivePath(src_path, PACKAGE_DIR "/", NULL);
   if (res < 0)
-    return res;
+    goto EXIT;
 
   // Close archive
   res = archiveClose();
+  archive_open = 0;
   if (res < 0)
-    return res;
+    goto EXIT;
 
   // Make head.bin
   res = makeHeadBin();
   if (res < 0)
-    return res;
+    goto EXIT;
 
-  // Promote app
-  res = promoteApp(PACKAGE_DIR);
-  if (res < 0)
-    return res;
+  // Promote app. A teardown error after commit is still returned so callers
+  // can report it, but the package itself has already installed.
+  PromoteAppResult promotion = promoteAppWithStatus(PACKAGE_DIR);
+  res = promotion.error;
 
-  return 0;
+EXIT:
+  if (archive_open) {
+    int close_error = archiveClose();
+    if (res >= 0 && close_error < 0)
+      res = close_error;
+  }
+  int cleanup_error = cleanupPackageStaging(staging);
+  if (res >= 0 && cleanup_error < 0)
+    res = cleanup_error;
+  return res;
 }
 
 int install_thread(SceSize args_size, InstallArguments *args) {
@@ -353,6 +435,8 @@ int install_thread(SceSize args_size, InstallArguments *args) {
   char path[MAX_PATH_LENGTH];
   SceIoStat stat;
   int isFolder = 0;
+  int archive_open = 0;
+  PackageStagingOwnership staging = PACKAGE_STAGING_UNOWNED;
 
   // Lock power timers
   powerLock();
@@ -360,9 +444,6 @@ int install_thread(SceSize args_size, InstallArguments *args) {
   // Set progress to 0%
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 0);
   sceKernelDelayThread(200 * 1000); // Further optimized to 200ms for even faster dialog opening
-
-  // Recursively clean up pkg directory
-  removePath(PACKAGE_DIR, NULL);
 
   res = sceIoGetstat(args->file, &stat);
   if (res < 0) {
@@ -420,6 +501,7 @@ int install_thread(SceSize args_size, InstallArguments *args) {
       errorDialog(res);
       goto EXIT;
     }
+    staging = PACKAGE_STAGING_MOVED_SOURCE;
     sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 50);
     // No delay - immediately proceed for maximum speed
 
@@ -433,6 +515,7 @@ int install_thread(SceSize args_size, InstallArguments *args) {
       errorDialog(res);
       goto EXIT;
     }
+    archive_open = 1;
 
     // If you canceled at the time archiveOpen was working,
     // it would still open the full permission dialog instead of termiating.
@@ -490,6 +573,17 @@ int install_thread(SceSize args_size, InstallArguments *args) {
       goto EXIT;
 
     // Update thread
+    res = sceIoMkdir(PACKAGE_DIR, 0777);
+    if (res < 0) {
+      if (res == (int)SCE_ERROR_ERRNO_EEXIST)
+        debugPrintf("Package install: staging %s occupied, kept (0x%08X)\n",
+                    PACKAGE_DIR, res);
+      closeWaitDialog();
+      errorDialog(res);
+      goto EXIT;
+    }
+    staging = PACKAGE_STAGING_DISPOSABLE;
+
     thid = createStartUpdateThread(size + folders*DIRECTORY_SIZE, 1);
 
     // Extract process
@@ -511,6 +605,7 @@ int install_thread(SceSize args_size, InstallArguments *args) {
 
     // Close archive
     res = archiveClose();
+    archive_open = 0;
     if (res < 0) {
       closeWaitDialog();
       errorDialog(res);
@@ -522,21 +617,28 @@ int install_thread(SceSize args_size, InstallArguments *args) {
   res = makeHeadBin();
   if (res < 0) {
     closeWaitDialog();
-    errorDialog(res);
-    // If failed, move package folder back
-    if (isFolder) sceIoRename(PACKAGE_DIR, args->file);
+    int restore_res = restorePackageFolder(&staging, args->file);
+    errorDialog(restore_res < 0 ? restore_res : res);
     goto EXIT;
   }
 
   // Promote app
-  res = promoteApp(PACKAGE_DIR);
-  if (res < 0) {
+  PromoteAppResult promotion = promoteAppWithStatus(PACKAGE_DIR);
+  if (promotion.error < 0) {
     closeWaitDialog();
-    errorDialog(res);
-    // If failed, move package folder back
-    if (isFolder) sceIoRename(PACKAGE_DIR, args->file);
+    // Restore only when promotion did not commit. The package manager may
+    // already have consumed PACKAGE_DIR after a committed installation.
+    if (isFolder && !promotion.committed) {
+      int restore_res = restorePackageFolder(&staging, args->file);
+      errorDialog(restore_res < 0 ? restore_res : promotion.error);
+    } else {
+      if (promotion.committed)
+        staging = PACKAGE_STAGING_DISPOSABLE;
+      errorDialog(promotion.error);
+    }
     goto EXIT;
   }
+  staging = PACKAGE_STAGING_DISPOSABLE;
 
   // Set progress to 100%
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 100);
@@ -552,8 +654,16 @@ EXIT:
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);
 
-  // Recursively clean up package_temp directory
-  removePath(PACKAGE_DIR, NULL);
+  if (archive_open) {
+    int close_error = archiveClose();
+    if (close_error < 0)
+      debugPrintf("Package install: archive close failed for %s: 0x%08X\n",
+                  args->file, close_error);
+  }
+
+  // Delete only staging owned by this operation. A moved folder whose restore
+  // failed may be the user's only copy and must remain untouched.
+  cleanupPackageStaging(staging);
 
   // Unlock power timers
   powerUnlock();

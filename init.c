@@ -347,7 +347,7 @@ void installDefaultFiles() {
   }  
 }
 
-void initVitaShell() {
+int initVitaShell(void) {
   // Set CPU to 444mhz
   scePowerSetArmClockFrequency(444);
 
@@ -392,7 +392,9 @@ void initVitaShell() {
   initSQLite();
 
   // Init power tick thread
-  initPowerTickThread();
+  int power_res = initPowerTickThread();
+  if (power_res < 0)
+    return power_res;
 
   // Delete VitaShell updater if available
   if (checkAppExist("VSUPDATER")) {
@@ -445,6 +447,7 @@ void initVitaShell() {
   }
   time_last_recent_files = 0;
   time_last_bookmarks = 0;
+  return 0;
 }
 
 void finishVitaShell() {

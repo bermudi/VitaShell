@@ -23,8 +23,8 @@ extern char pfs_mounted_path[];
 extern char pfs_mount_point[];
 extern int read_only;
 
-extern int known_pfs_ids[];
 int pfsMount(const char *path);
 int pfsUmount();
+int pfsUmountIfMounted();
 
 #endif

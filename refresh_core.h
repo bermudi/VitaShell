@@ -1,0 +1,224 @@
+/*
+  Portable refresh transaction helpers shared by VitaShell and host tests.
+*/
+
+#ifndef __REFRESH_CORE_H__
+#define __REFRESH_CORE_H__
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define REFRESH_WORK_BIN_SIZE 512
+#define REFRESH_PATH_MAX 1024
+
+typedef struct {
+  int refreshed;
+  int first_error;
+  int first_promotion_error;
+  int first_work_bin_error;
+  int restore_error;
+} RefreshResults;
+
+typedef struct {
+  int error;
+  int work_bin_error;
+  int committed;
+} RefreshPromotionResult;
+
+typedef enum {
+  REFRESH_TRANSACTION_BLOCKED,
+  REFRESH_TRANSACTION_STAGE_FAILED,
+  REFRESH_TRANSACTION_PROMOTED,
+  REFRESH_TRANSACTION_COMMITTED_WITH_ERROR,
+  REFRESH_TRANSACTION_RESTORED,
+  REFRESH_TRANSACTION_RESTORE_FAILED
+} RefreshTransactionResult;
+
+typedef int (*RefreshRenameFn)(void *context, const char *source, const char *destination);
+typedef RefreshPromotionResult (*RefreshPromoteFn)(void *context, const char *path);
+typedef void (*RefreshErrorFn)(void *context, int error, const char *operation,
+                               const char *path);
+typedef int (*RefreshRemovePathFn)(void *context, const char *path);
+
+typedef struct {
+  void *context;
+  RefreshRenameFn rename_path;
+  RefreshPromoteFn promote;
+  RefreshErrorFn report_error;
+  /* Invoked only after the promoter has committed (promotion success or
+     committed-with-error) to delete the staging copy. Never called on
+     restore paths: after a restore the staging path no longer holds a
+     disposable copy, and after a failed restore it holds the only copy. */
+  RefreshRemovePathFn remove_path;
+} RefreshTransactionOps;
+
+typedef struct {
+  const char *staging;
+  const char *promotion;
+  const char *restore;
+  const char *work_bin;
+  const char *cleanup;
+} RefreshOperationNames;
+
+int refreshReportedError(const RefreshResults *results);
+
+/*
+  PSM content_id files are exactly 48 bytes. Extracts the nine-byte title ID
+  beginning at offset seven and optionally a NUL-terminated content ID.
+  Returns 0 on success and -1 for malformed input.
+*/
+int refreshParsePsmContentId(
+    const uint8_t *data,
+    size_t size,
+    char title_id[10],
+    char content_id[49]);
+
+RefreshTransactionResult refreshStageAndPromote(
+    RefreshResults *results,
+    const char *source,
+    const char *staging,
+    const RefreshTransactionOps *ops,
+    const RefreshOperationNames *names);
+
+RefreshTransactionResult refreshPromoteStaged(
+    RefreshResults *results,
+    const char *source,
+    const char *staging,
+    const RefreshTransactionOps *ops,
+    const RefreshOperationNames *names);
+
+int refreshRestoreStaged(
+    RefreshResults *results,
+    const char *source,
+    const char *staging,
+    const RefreshTransactionOps *ops,
+    const RefreshOperationNames *names);
+
+typedef int (*RefreshOpenFn)(void *context, const char *path);
+typedef int (*RefreshWriteFn)(void *context, int fd, const void *buffer, size_t size);
+typedef int (*RefreshCloseFn)(void *context, int fd);
+typedef int (*RefreshRemoveFn)(void *context, const char *path);
+
+typedef struct {
+  void *context;
+  RefreshOpenFn open_file;
+  RefreshWriteFn write_file;
+  RefreshCloseFn close_file;
+  RefreshRemoveFn remove_file;
+  RefreshRenameFn rename_path;
+} RefreshWorkBinOps;
+
+/*
+  Writes a RIF to a temporary sibling and renames it into place only after all
+  bytes have been written and the descriptor has closed successfully.
+
+  Returns the primary write/close/rename error. A failure to remove the
+  temporary partial file is returned separately through cleanup_error.
+*/
+int refreshWriteWorkBin(
+    const char *path,
+    const char *temporary_path,
+    const uint8_t rif[REFRESH_WORK_BIN_SIZE],
+    int short_write_error,
+    const RefreshWorkBinOps *ops,
+    int *cleanup_error);
+
+/*
+  Iterates a list of staged DLC source paths (NULL entries skipped) and either
+  promotes each one or, once a prior restore has failed (restore_error < 0),
+  renames every remaining entry back to its original path. The staging path for
+  each entry is built as staging_prefix + "/" + basename(source). The caller
+  retains ownership of the sources array and is responsible for freeing entries.
+*/
+int refreshRestoreOrPromoteDlc(
+    RefreshResults *results,
+    char **sources,
+    int count,
+    const char *staging_prefix,
+    const RefreshTransactionOps *ops,
+    const RefreshOperationNames *names);
+
+/* sceIoDopen result for an absent directory (SCE_ERROR_ERRNO_ENOENT). */
+#define LICENSE_SCAN_NOT_FOUND ((int)0x80010002)
+
+typedef enum {
+  LICENSE_SCAN_COMPLETED,
+  LICENSE_SCAN_CANCELED,
+  LICENSE_SCAN_FAILED
+} LicenseScanResult;
+
+typedef int (*LicenseScanCategoryFn)(void *context, const char *root);
+typedef void (*LicenseScanReportFn)(void *context, const char *root, int error);
+
+typedef struct {
+  void *context;
+  /* Runs one parse_dir_with_callback scan of root and returns its result. */
+  LicenseScanCategoryFn scan_category;
+  /* Reports a category root that is absent and is therefore skipped. */
+  LicenseScanReportFn report_skip;
+  /* Reports a scan failure other than an absent category root. */
+  LicenseScanReportFn report_error;
+} LicenseScanOps;
+
+/*
+  Scans license category roots in order. A confirmed directory-not-found
+  result skips that category, so an absent addcont tree cannot prevent
+  importing app licenses. Any other negative result stops the sequence and is
+  returned through scan_error; a positive result is cancellation, not an error.
+*/
+LicenseScanResult licenseScanCategories(
+    const char *const *roots, int root_count,
+    const LicenseScanOps *ops, int *scan_error);
+
+typedef int (*LicensePrepareFn)(void *context);
+
+typedef struct {
+  /* Shared by both passes; the context selects counting or copying. */
+  LicenseScanOps scan;
+  /*
+    Runs once after the counting pass completed and before the copy pass
+    starts (creates the progress worker and the database). A negative result
+    aborts the import before any license is copied.
+  */
+  LicensePrepareFn prepare_import;
+} LicenseImportOps;
+
+/*
+  Counts every category root, runs prepare_import once, then copies. A failure
+  in the counting pass or in prepare_import prevents the copy pass from
+  starting. A failure while copying stops later categories and is returned
+  through import_error; licenses already copied are retained, never undone.
+  Cancellation is not an error.
+*/
+LicenseScanResult licenseImportCategories(
+    const char *const *roots, int root_count,
+    const LicenseImportOps *ops, int *import_error);
+
+typedef int (*LicenseOpenFn)(void *context, const char *path);
+typedef int (*LicenseReadFn)(void *context, int fd, void *buffer, size_t size);
+typedef int (*LicenseCloseFn)(void *context, int fd);
+typedef int (*LicenseInsertFn)(void *context, const uint8_t *rif);
+
+typedef struct {
+  void *context;
+  LicenseOpenFn open_file;
+  LicenseReadFn read_file;
+  LicenseCloseFn close_file;
+  LicenseInsertFn insert_rif;
+} LicenseFileOps;
+
+/*
+  Imports one RIF file: open, read exactly rif_size bytes, close, insert.
+  open/read/close/insert follow the sceIo convention: negative means failure,
+  read returns the byte count on success. The first failure is returned and
+  the descriptor is closed even when reading fails; a read that yields fewer
+  bytes than requested (truncated file) is reported as short_read_error.
+*/
+int licenseImportRif(
+    const char *path,
+    uint8_t *rif,
+    size_t rif_size,
+    int short_read_error,
+    const LicenseFileOps *ops);
+
+#endif

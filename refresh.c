@@ -24,6 +24,7 @@
 #include "init.h"
 #include "io_process.h"
 #include "refresh.h"
+#include "refresh_core.h"
 #include "package_installer.h"
 #include "sfo.h"
 #include "file.h"
@@ -33,6 +34,9 @@
 #include "rif.h"
 #include "pfs.h"
 #include "pbp.h"
+
+_Static_assert(LICENSE_SCAN_NOT_FOUND == SCE_ERROR_ERRNO_ENOENT,
+               "license scan not-found code must match SCE_ERROR_ERRNO_ENOENT");
 
 // Note: The promotion process is *VERY* sensitive to the directories used below
 // Don't change them unless you know what you are doing!
@@ -58,12 +62,16 @@ int isCustomHomebrew(const char* path) {
   return 1;
 }
 
-int refreshNeeded(const char *app_path, const char* content_type) {
+int refreshNeeded(const char *app_path, const char* content_type,
+                  int *eligibility_error) {
   char appmeta_path[MAX_PATH_LENGTH];
   char appmeta_param[MAX_PATH_LENGTH];
   char sfo_path[MAX_PATH_LENGTH];
   int mounted_appmeta;
   char titleid[12], contentid[50], appver[8];
+
+  if (eligibility_error != NULL)
+    *eligibility_error = 0;
   
   if(strcmp(content_type,"psm") == 0) 
   {
@@ -79,14 +87,19 @@ int refreshNeeded(const char *app_path, const char* content_type) {
     
     // Get content id
     int contentid_size = allocateReadFile(contentid_path, &cidFile);
-    if(contentid_size != 48) //Check if valid contentid file
+    if (contentid_size < 0) {
+      free(cidFile);
+      if (eligibility_error != NULL)
+        *eligibility_error = contentid_size;
       return 0;
-  
-    // Get title id from content id
-    strncpy(titleid,cidFile+7,9);
-    strncpy(contentid,cidFile,49);
-    
-    
+    }
+    if (refreshParsePsmContentId(cidFile, (size_t)contentid_size, titleid,
+                                 contentid) < 0) {
+      free(cidFile);
+      if (eligibility_error != NULL)
+        *eligibility_error = VITASHELL_ERROR_INVALID_TITLEID;
+      return 0;
+    }
     free(cidFile);
   }
   else if(strcmp(content_type, "psp") == 0) {
@@ -251,73 +264,137 @@ int refreshNeeded(const char *app_path, const char* content_type) {
   return 1;
 }
 
-int refreshApp(const char *app_path) {
+static int openWorkBin(void *context, const char *path) {
+  (void)context;
+  return sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+}
+
+static int writeWorkBin(void *context, int fd, const void *buffer, size_t size) {
+  (void)context;
+  return sceIoWrite(fd, buffer, size);
+}
+
+static int closeWorkBin(void *context, int fd) {
+  (void)context;
+  return sceIoClose(fd);
+}
+
+static int removeWorkBin(void *context, const char *path) {
+  (void)context;
+  return sceIoRemove(path);
+}
+
+static int renameWorkBin(void *context, const char *source, const char *destination) {
+  (void)context;
+  return sceIoRename(source, destination);
+}
+
+static const RefreshWorkBinOps work_bin_ops = {
+  NULL,
+  openWorkBin,
+  writeWorkBin,
+  closeWorkBin,
+  removeWorkBin,
+  renameWorkBin,
+};
+
+RefreshPromotionResult refreshApp(const char *app_path) {
   char work_bin_path[MAX_PATH_LENGTH];
   int res;
+
+  RefreshPromotionResult result = { 0, 0, 0 };
 
   snprintf(work_bin_path, MAX_PATH_LENGTH, "%s/sce_sys/package/work.bin", app_path);
 
   // Remove work.bin for custom homebrews
   if (isCustomHomebrew(work_bin_path)) {
-    sceIoRemove(work_bin_path);
+    res = sceIoRemove(work_bin_path);
+    if (res < 0)
+      result.work_bin_error = res;
   } else if (!checkFileExist(work_bin_path)) {
-    // If available, restore work.bin from licenses.db
+    // If available, restore work.bin from license.db
     void *sfo_buffer = NULL;
     char sfo_path[MAX_PATH_LENGTH], contentid[50];
     snprintf(sfo_path, MAX_PATH_LENGTH, "%s/sce_sys/param.sfo", app_path);
     int sfo_size = allocateReadFile(sfo_path, &sfo_buffer);
-    if (sfo_size > 0) {
-      getSfoString(sfo_buffer, "CONTENT_ID", contentid, sizeof(contentid));
-      uint8_t* rif = query_rif(LICENSE_DB, contentid);
-      if (rif != NULL) {
-        int fh = sceIoOpen(work_bin_path, SCE_O_WRONLY | SCE_O_CREAT, 0777);
-        if (fh > 0) {
-          sceIoWrite(fh, rif, RIF_SIZE);
-          sceIoClose(fh);
+    if (sfo_size <= 0) {
+      result.work_bin_error = (sfo_size < 0) ? sfo_size : VITASHELL_ERROR_INVALID_MAGIC;
+    } else {
+      res = getSfoString(sfo_buffer, "CONTENT_ID", contentid, sizeof(contentid));
+      if (res < 0) {
+        result.work_bin_error = res;
+      } else {
+        uint8_t *rif = query_rif(LICENSE_DB, contentid);
+        if (rif == NULL) {
+          result.work_bin_error = VITASHELL_ERROR_NOT_FOUND;
+        } else {
+          char temporary_path[MAX_PATH_LENGTH];
+          snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", work_bin_path);
+          sceIoRemove(temporary_path);
+          int cleanup_error = 0;
+          result.work_bin_error = refreshWriteWorkBin(
+              work_bin_path, temporary_path, rif, VITASHELL_ERROR_INTERNAL,
+              &work_bin_ops, &cleanup_error);
+          if (cleanup_error < 0)
+            debugPrintf("Refresh LiveArea: partial work.bin cleanup failed for %s: 0x%08X\n",
+                        temporary_path, cleanup_error);
+          free(rif);
         }
-        free(rif);
       }
     }
     free(sfo_buffer);
   }
 
+  if (result.work_bin_error < 0)
+    debugPrintf("Refresh LiveArea: work.bin unavailable for %s: 0x%08X\n",
+                app_path, result.work_bin_error);
+
   // Promote vita app/vita dlc/vita patch (if needed)
-  res = promoteApp(app_path);
-  return (res < 0) ? res : 1;
+  PromoteAppResult promotion = promoteAppWithStatus(app_path);
+  result.error = promotion.error;
+  result.committed = promotion.committed;
+  if (result.error < 0)
+    debugPrintf("Refresh LiveArea: promotion failed for %s: 0x%08X%s\n",
+                app_path, result.error,
+                result.committed ? " after the package was committed" : "");
+  return result;
 }
 
 // target_type should be either SCE_S_IFREG for files or SCE_S_IFDIR for directories
 int parse_dir_with_callback(int target_type, const char* path, void(*callback)(void*, const char*, const char*), void* data) {
   SceUID dfd = sceIoDopen(path);
-  if (dfd >= 0) {
-    int res = 0;
+  if (dfd < 0)
+    return dfd;
 
-    do {
-      SceIoDirent dir;
-      memset(&dir, 0, sizeof(SceIoDirent));
+  int res = 0;
+  do {
+    SceIoDirent dir;
+    memset(&dir, 0, sizeof(SceIoDirent));
 
-      res = sceIoDread(dfd, &dir);
-      if (res > 0) {
-        if ((dir.d_stat.st_mode & SCE_S_IFMT) == target_type) {
-          callback(data, path, dir.d_name);
-          if (cancelHandler()) {
-            closeWaitDialog();
-            setDialogStep(DIALOG_STEP_CANCELED);
-            return -1;
-          }
-        }
+    res = sceIoDread(dfd, &dir);
+    if (res > 0 && (dir.d_stat.st_mode & SCE_S_IFMT) == target_type) {
+      callback(data, path, dir.d_name);
+      if (cancelHandler()) {
+        closeWaitDialog();
+        setDialogStep(DIALOG_STEP_CANCELED);
+        sceIoDclose(dfd);
+        return 1;
       }
-    } while (res > 0);
-    sceIoDclose(dfd);
-  }
-  return 0;
+    }
+  } while (res > 0);
+
+  int close_res = sceIoDclose(dfd);
+  if (res < 0)
+    return res;
+  return close_res;
 }
 
 typedef struct {
   int refresh_pass;
   int count;
   int processed;
-  int refreshed;
+  int canceled;
+  RefreshResults results;
 } refresh_data_t;
 
 typedef struct {
@@ -331,11 +408,128 @@ typedef struct {
   int count;
   int processed;
   int copied;
+  int error;
   int cur_depth;
   int max_depth;
+  SceUID update_thid;
   uint8_t* rif;
 } license_data_t;
 
+static void recordRefreshError(refresh_data_t *refresh_data, int error, const char *operation,
+                               const char *path) {
+  if (error >= 0)
+    return;
+
+  debugPrintf("Refresh LiveArea: %s failed for %s: 0x%08X\n", operation, path, error);
+  if (refresh_data->results.first_error == 0)
+    refresh_data->results.first_error = error;
+}
+
+static int renameRefreshPath(void *context, const char *source, const char *destination) {
+  (void)context;
+  return sceIoRename(source, destination);
+}
+
+static RefreshPromotionResult promoteRefreshPath(void *context, const char *path) {
+  (void)context;
+  return refreshApp(path);
+}
+
+static void logRefreshError(void *context, int error, const char *operation,
+                            const char *path) {
+  (void)context;
+  debugPrintf("Refresh LiveArea: %s failed for %s: 0x%08X\n", operation, path, error);
+}
+
+static int removeRefreshPath(void *context, const char *path) {
+  (void)context;
+  return removePath(path, NULL);
+}
+
+typedef struct {
+  const char *root;
+  const char *titleid;
+  int type;
+} CmaRefreshContext;
+
+static RefreshPromotionResult promoteCmaRefreshPath(void *context,
+                                                    const char *path) {
+  CmaRefreshContext *cma = context;
+  PromoteAppResult promotion;
+  RefreshPromotionResult result;
+
+  promotion = promoteCmaWithStatus(cma->root, cma->titleid, cma->type);
+  debugPrintf("Refresh LiveArea: CMA promotion(root=%s, titleid=%s, "
+              "staging=%s, type=%d) returned 0x%08X\n",
+              cma->root, cma->titleid, path, cma->type, promotion.error);
+  result.error = promotion.error;
+  result.work_bin_error = 0;
+  result.committed = promotion.committed;
+  return result;
+}
+
+static const RefreshTransactionOps refresh_ops = {
+  NULL,
+  renameRefreshPath,
+  promoteRefreshPath,
+  logRefreshError,
+  removeRefreshPath,
+};
+
+static const RefreshOperationNames app_operations = {
+  "staging rename",
+  "promotion",
+  "restore rename",
+  "work.bin preparation",
+  "staging cleanup",
+};
+
+static const RefreshOperationNames dlc_operations = {
+  "DLC staging rename",
+  "DLC promotion",
+  "DLC restore rename",
+  "DLC work.bin preparation",
+  "DLC staging cleanup",
+};
+
+static const RefreshOperationNames psp_operations = {
+  "PSP staging rename",
+  "PSP promotion",
+  "PSP restore rename",
+  "PSP work.bin preparation",
+  "PSP staging cleanup",
+};
+
+static const RefreshOperationNames psm_operations = {
+  "PSM staging rename",
+  "PSM promotion",
+  "PSM restore rename",
+  "PSM work.bin preparation",
+  "PSM staging cleanup",
+};
+
+static RefreshTransactionResult promoteCmaStaged(
+    refresh_data_t *refresh_data, const char *source, const char *staging,
+    const char *root, const char *titleid, int type,
+    const RefreshOperationNames *operations) {
+  CmaRefreshContext context = { root, titleid, type };
+  RefreshTransactionOps ops = {
+    &context,
+    renameRefreshPath,
+    promoteCmaRefreshPath,
+    logRefreshError,
+    removeRefreshPath,
+  };
+
+  return refreshPromoteStaged(&refresh_data->results, source, staging,
+                              &ops, operations);
+}
+
+static void stageAndRefresh(refresh_data_t *refresh_data, const char *source,
+                            const char *staging) {
+  refreshStageAndPromote(&refresh_data->results, source, staging,
+                         &refresh_ops, &app_operations);
+}
 
 void app_callback(void* data, const char* dir, const char* subdir) {
   refresh_data_t *refresh_data = (refresh_data_t*)data;
@@ -345,16 +539,19 @@ void app_callback(void* data, const char* dir, const char* subdir) {
     return;
 
   if (refresh_data->refresh_pass) {
+    if (refresh_data->results.restore_error < 0) {
+      SetProgress(++refresh_data->processed, refresh_data->count);
+      return;
+    }
+
     snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-    if (refreshNeeded(path, "app")) {
+    if (refreshNeeded(path, "app", NULL)) {
       // Move the directory to temp for installation
-      removePath(APP_TEMP, NULL);
-      sceIoRename(path, APP_TEMP);
-      if (refreshApp(APP_TEMP) == 1)
-        refresh_data->refreshed++;
+      if (checkFolderExist(APP_TEMP))
+        recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
+                           "occupied staging directory", APP_TEMP);
       else
-        // Restore folder on error
-        sceIoRename(APP_TEMP, path);
+        stageAndRefresh(refresh_data, path, APP_TEMP);
     }
     SetProgress(++refresh_data->processed, refresh_data->count);
   } else {
@@ -388,17 +585,45 @@ void dlc_callback_outer(void* data, const char* dir, const char* subdir) {
 
   // Get the title's dlc subdirectories
   int len = snprintf(path, sizeof(path), "%s/%s", dir, subdir);
-  parse_dir_with_callback(SCE_S_IFDIR, path, dlc_callback_inner, &dlc_data);
+  int scan_res = parse_dir_with_callback(SCE_S_IFDIR, path, dlc_callback_inner, &dlc_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data->canceled = 1;
+    else
+      recordRefreshError(refresh_data, scan_res, "DLC directory scan", path);
+    for (int i = 0; i < dlc_data.list_size; i++)
+      free(dlc_data.list[i]);
+    return;
+  }
 
   if (refresh_data->refresh_pass) {
+    if (refresh_data->results.restore_error < 0) {
+      for (int i = 0; i < dlc_data.list_size; i++)
+        free(dlc_data.list[i]);
+      return;
+    }
+
     // For dlc, the process happens in two phases to avoid promotion errors:
     // 1. Move all dlc that require refresh out of addcont/title_id
     // 2. Refresh the moved dlc_data
     for (int i = 0; i < dlc_data.list_size; i++) {
-      if (refreshNeeded(dlc_data.list[i], "dlc")) {
+      if (refreshNeeded(dlc_data.list[i], "dlc", NULL)) {
         snprintf(path, MAX_PATH_LENGTH, DLC_TEMP "/%s", &dlc_data.list[i][len + 1]);
-        removePath(path, NULL);
-        sceIoRename(dlc_data.list[i], path);
+        if (checkFolderExist(path)) {
+          recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
+                             "occupied DLC staging directory", path);
+          free(dlc_data.list[i]);
+          dlc_data.list[i] = NULL;
+          SetProgress(++refresh_data->processed, refresh_data->count);
+          continue;
+        }
+        int res = sceIoRename(dlc_data.list[i], path);
+        if (res < 0) {
+          recordRefreshError(refresh_data, res, "DLC staging rename", dlc_data.list[i]);
+          free(dlc_data.list[i]);
+          dlc_data.list[i] = NULL;
+          SetProgress(++refresh_data->processed, refresh_data->count);
+        }
       } else {
         free(dlc_data.list[i]);
         dlc_data.list[i] = NULL;
@@ -406,14 +631,14 @@ void dlc_callback_outer(void* data, const char* dir, const char* subdir) {
       }
     }
 
-    // Now that the dlc we need are out of addcont/title_id, refresh them
+    // Now that the dlc we need are out of addcont/title_id, refresh them.
+    // If one restore fails, restore every remaining staged DLC instead of
+    // promoting or deleting anything else.
     for (int i = 0; i < dlc_data.list_size; i++) {
       if (dlc_data.list[i] != NULL) {
-        snprintf(path, MAX_PATH_LENGTH, DLC_TEMP "/%s", &dlc_data.list[i][len + 1]);
-        if (refreshApp(path) == 1)
-          refresh_data->refreshed++;
-        else
-          sceIoRename(path, dlc_data.list[i]);
+        refreshRestoreOrPromoteDlc(&refresh_data->results, &dlc_data.list[i],
+                                   1, DLC_TEMP, &refresh_ops,
+                                   &dlc_operations);
         SetProgress(++refresh_data->processed, refresh_data->count);
         free(dlc_data.list[i]);
       }
@@ -426,16 +651,19 @@ void patch_callback(void* data, const char* dir, const char* subdir) {
   char path[MAX_PATH_LENGTH];
 
   if (refresh_data->refresh_pass) {
+    if (refresh_data->results.restore_error < 0) {
+      SetProgress(++refresh_data->processed, refresh_data->count);
+      return;
+    }
+
     snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-    if (refreshNeeded(path, "patch")) {
+    if (refreshNeeded(path, "patch", NULL)) {
       // Move the directory to temp for installation
-      removePath(PATCH_TEMP, NULL);
-      sceIoRename(path, PATCH_TEMP);
-      if (refreshApp(PATCH_TEMP) == 1)
-        refresh_data->refreshed++;
+      if (checkFolderExist(PATCH_TEMP))
+        recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
+                           "occupied staging directory", PATCH_TEMP);
       else
-        // Restore folder on error
-        sceIoRename(PATCH_TEMP, path);
+        stageAndRefresh(refresh_data, path, PATCH_TEMP);
     }
     SetProgress(++refresh_data->processed, refresh_data->count);
   } else {
@@ -448,8 +676,13 @@ void psp_callback(void* data, const char* dir, const char* subdir) {
   char path[MAX_PATH_LENGTH];
 
   if (refresh_data->refresh_pass) {
+      if (refresh_data->results.restore_error < 0) {
+        SetProgress(++refresh_data->processed, refresh_data->count);
+        return;
+      }
+
       snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-      if (refreshNeeded(path, "psp")) {
+      if (refreshNeeded(path, "psp", NULL)) {
         char contentid[0x30];
         
         char sce_ebootpbp[MAX_PATH_LENGTH];
@@ -536,18 +769,33 @@ void psp_callback(void* data, const char* dir, const char* subdir) {
               int eboot_gen = gen_sce_ebootpbp(path, discid);
               
               // move path to promote folder
-              sceIoRename(path, promote_game_folder);
-              
-              int promote = promoteCma(PSP_TEMP, discid, SCE_PKG_TYPE_PSP);
-              
-              sceClibPrintf("eboot_gen: %x, promote %x\n", eboot_gen, promote);
-              
-              if (promote == 0) {
-                refresh_data->refreshed++;
-              }
-              else {
-                sceIoRename(promote_game_folder, path); // Restore folder on error
-                removePath(PSP_TEMP, NULL); // delete what was created 
+              int stage_res = sceIoRename(path, promote_game_folder);
+              if (stage_res < 0) {
+                recordRefreshError(refresh_data, stage_res, "PSP staging rename", path);
+              } else {
+                RefreshTransactionResult transaction = promoteCmaStaged(
+                    refresh_data, path, promote_game_folder, PSP_TEMP, discid,
+                    SCE_PKG_TYPE_PSP, &psp_operations);
+
+                sceClibPrintf("eboot_gen: %x, promote transaction %d\n",
+                              eboot_gen, transaction);
+
+                if (transaction == REFRESH_TRANSACTION_PROMOTED ||
+                    transaction == REFRESH_TRANSACTION_COMMITTED_WITH_ERROR ||
+                    transaction == REFRESH_TRANSACTION_RESTORED) {
+                  int license_cleanup = sceIoRemove(promote_license_rif);
+                  recordRefreshError(refresh_data, license_cleanup,
+                                     "PSP license staging cleanup",
+                                     promote_license_rif);
+
+                  /*
+                    Remove only empty scaffolding. If unrelated staging data
+                    exists these calls safely fail instead of deleting it.
+                  */
+                  sceIoRmdir(promote_psp_license_folder);
+                  sceIoRmdir(promote_psp_game_folder);
+                  sceIoRmdir(promote_psp_folder);
+                }
               }
               
               // if eboot signature generation was unsuccessful, write original signature back
@@ -579,8 +827,14 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
   char path[MAX_PATH_LENGTH];
 
   if (refresh_data->refresh_pass) {
+    if (refresh_data->results.restore_error < 0) {
+      SetProgress(++refresh_data->processed, refresh_data->count);
+      return;
+    }
+
     snprintf(path, MAX_PATH_LENGTH, "%s/%s", dir, subdir);
-    if (refreshNeeded(path, "psm")) {        
+    int eligibility_error = 0;
+    if (refreshNeeded(path, "psm", &eligibility_error)) {
       char contentid_path[MAX_PATH_LENGTH];
       snprintf(contentid_path, MAX_PATH_LENGTH, "%s/RW/System/content_id", path);
       
@@ -590,13 +844,21 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
       // Initalize Bufer
       memset(titleid,0,12);
   
-      // Get content id
-      allocateReadFile(contentid_path, &cidFile);
-  
-      // Get title id from content id
-      strncpy(titleid,cidFile+7,9);
-      
-      //free buffers
+      // Get and validate the content id again. It may have disappeared or
+      // changed since the eligibility check; never dereference a failed read.
+      int contentid_size = allocateReadFile(contentid_path, &cidFile);
+      int contentid_error = contentid_size < 0
+                                ? contentid_size
+                                : VITASHELL_ERROR_INVALID_TITLEID;
+      if (contentid_size < 0 ||
+          refreshParsePsmContentId(cidFile, (size_t)contentid_size, titleid,
+                                   NULL) < 0) {
+        free(cidFile);
+        recordRefreshError(refresh_data, contentid_error,
+                           "PSM content_id read", contentid_path);
+        SetProgress(++refresh_data->processed, refresh_data->count);
+        return;
+      }
       free(cidFile);
       
       
@@ -605,18 +867,25 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
       snprintf(promote_path,MAX_PATH_LENGTH,"%s/%s",PSM_TEMP, titleid);
   
       // Move the directory to temp for installation
-      removePath(promote_path, NULL);
-      sceIoRename(path, promote_path);
-  
-      // Finally call promote
-      if (promoteCma(PSM_TEMP, titleid, SCE_PKG_TYPE_PSM) == 0) {
-        refresh_data->refreshed++;
+      if (checkFolderExist(promote_path)) {
+        recordRefreshError(refresh_data, SCE_ERROR_ERRNO_EEXIST,
+                           "occupied PSM staging directory", promote_path);
+        SetProgress(++refresh_data->processed, refresh_data->count);
+        return;
       }
-      else{
-        sceIoRename(promote_path, path); // Restore folder on error
+      int stage_res = sceIoRename(path, promote_path);
+      if (stage_res < 0) {
+        recordRefreshError(refresh_data, stage_res, "PSM staging rename", path);
+      } else {
+        // Finally call promote
+        promoteCmaStaged(refresh_data, path, promote_path, PSM_TEMP, titleid,
+                         SCE_PKG_TYPE_PSM, &psm_operations);
       }
-      SetProgress(++refresh_data->processed, refresh_data->count);
+    } else if (eligibility_error < 0) {
+      recordRefreshError(refresh_data, eligibility_error,
+                         "PSM content_id eligibility", path);
     }
+    SetProgress(++refresh_data->processed, refresh_data->count);
   } else {
     refresh_data->count++;
   }
@@ -624,7 +893,7 @@ void psm_callback(void* data, const char* dir, const char* subdir) {
 
 int refresh_thread(SceSize args, void *argp)  {
   SceUID thid = -1;
-  refresh_data_t refresh_data = { 0, 0, 0, 0 };
+  refresh_data_t refresh_data = { 0 };
   
   // Lock power timers
   powerLock();
@@ -633,25 +902,47 @@ int refresh_thread(SceSize args, void *argp)  {
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 0);
   sceKernelDelayThread(DIALOG_WAIT); // Needed to see the percentage
 
-  // Get the app count
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:app", app_callback, &refresh_data) < 0)
-    goto EXIT;
-
-  // Get the dlc count
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:addcont", dlc_callback_outer, &refresh_data) < 0)
-    goto EXIT;
-
-  // Get the patch count
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:patch", patch_callback, &refresh_data) < 0)
-    goto EXIT;
-
-  // Get the psm count
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:psm", psm_callback, &refresh_data) < 0)
-    goto EXIT;
- 
-  // Get the psp count
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:pspemu/PSP/GAME", psp_callback, &refresh_data) < 0)
-    goto EXIT;
+  // Count all content before starting the progress worker.
+  int scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:app", app_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:app");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:addcont", dlc_callback_outer, &refresh_data);
+  if (refresh_data.canceled || scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else if (scan_res < 0)
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:addcont");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:patch", patch_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:patch");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:psm", psm_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:psm");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:pspemu/PSP/GAME", psp_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:pspemu/PSP/GAME");
+    goto FINISH;
+  }
 
   // Update thread
   thid = createStartUpdateThread(refresh_data.count, 0);
@@ -661,36 +952,61 @@ int refresh_thread(SceSize args, void *argp)  {
   sceIoMkdir("ux0:pspemu", 0777);
   sceIoMkdir("ux0:pspemu/temp", 0777);
   sceIoMkdir(DLC_TEMP, 0777);
-  sceIoMkdir(PATCH_TEMP, 0777);
   sceIoMkdir(PSM_TEMP, 0777);
   sceIoMkdir(PSP_TEMP, 0777);
   refresh_data.refresh_pass = 1;
 
-  // Refresh apps
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:app", app_callback, &refresh_data) < 0)
-    goto EXIT;
-
-  // Refresh dlc
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:addcont", dlc_callback_outer, &refresh_data) < 0)
-    goto EXIT;
-  
-  // Refresh patch
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:patch", patch_callback, &refresh_data) < 0)
-    goto EXIT;
-
-  // Refresh psm
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:psm", psm_callback, &refresh_data) < 0)
-    goto EXIT;
-
-  // Refresh psp
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:pspemu/PSP/GAME", psp_callback, &refresh_data) < 0)
-    goto EXIT;
+  // Refresh all content, preserving the exact directory-scan error.
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:app", app_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:app");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:addcont", dlc_callback_outer, &refresh_data);
+  if (refresh_data.canceled || scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else if (scan_res < 0)
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:addcont");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:patch", patch_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:patch");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:psm", psm_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:psm");
+    goto FINISH;
+  }
+  scan_res = parse_dir_with_callback(SCE_S_IFDIR, "ux0:pspemu/PSP/GAME", psp_callback, &refresh_data);
+  if (scan_res != 0) {
+    if (scan_res > 0)
+      refresh_data.canceled = 1;
+    else
+      recordRefreshError(&refresh_data, scan_res, "directory scan", "ux0:pspemu/PSP/GAME");
+    goto FINISH;
+  }
 
   sceIoRmdir(DLC_TEMP);
   sceIoRmdir(PATCH_TEMP);
   sceIoRmdir(PSM_TEMP);
   sceIoRmdir(PSP_TEMP);
-  
+
+FINISH:
+  if (refresh_data.canceled)
+    goto CLEANUP;
+
   // Set progress to 100%
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 100);
   sceKernelDelayThread(COUNTUP_WAIT);
@@ -698,9 +1014,19 @@ int refresh_thread(SceSize args, void *argp)  {
   // Close
   closeWaitDialog();
 
-  infoDialog(language_container[REFRESHED], refresh_data.refreshed);
+  int reported_error = refreshReportedError(&refresh_data.results);
 
-EXIT:
+  if (reported_error < 0) {
+    char refreshed_message[128];
+    char error_message[128];
+    snprintf(refreshed_message, sizeof(refreshed_message), language_container[REFRESHED], refresh_data.results.refreshed);
+    snprintf(error_message, sizeof(error_message), language_container[ERROR], reported_error);
+    infoDialog("%s\n%s", refreshed_message, error_message);
+  } else {
+    infoDialog(language_container[REFRESHED], refresh_data.results.refreshed);
+  }
+
+CLEANUP:
   if (thid >= 0)
     sceKernelWaitThreadEnd(thid, NULL, NULL);
 
@@ -714,6 +1040,44 @@ EXIT:
 // Note: This is currently not optimized AT ALL.
 // Ultimately, we want to use a single transaction and avoid trying to
 // re-insert rifs that are already present.
+static int licenseOpenFile(void *context, const char *path) {
+  (void)context;
+  return sceIoOpen(path, SCE_O_RDONLY, 0777);
+}
+
+static int licenseReadFile(void *context, int fd, void *buffer, size_t size) {
+  (void)context;
+  int read = sceIoRead(fd, buffer, size);
+  if (read >= 0 && (size_t)read != size)
+    debugPrintf("Import licenses: sceIoRead returned %d of %d bytes\n",
+                read, (int)size);
+  return read;
+}
+
+static int licenseCloseFile(void *context, int fd) {
+  (void)context;
+  return sceIoClose(fd);
+}
+
+static int licenseInsertRif(void *context, const uint8_t *rif) {
+  (void)context;
+  int rc = insert_rif(LICENSE_DB, rif);
+  if (rc != 0) {
+    debugPrintf("Import licenses: insert_rif(path=%s) returned %d\n",
+                LICENSE_DB, rc);
+    return VITASHELL_ERROR_INTERNAL;
+  }
+  return 0;
+}
+
+static const LicenseFileOps license_file_ops = {
+  NULL,
+  licenseOpenFile,
+  licenseReadFile,
+  licenseCloseFile,
+  licenseInsertRif,
+};
+
 void license_file_callback(void* data, const char* dir, const char* file) {
   license_data_t *license_data = (license_data_t*)data;
   char path[MAX_PATH_LENGTH];
@@ -721,17 +1085,19 @@ void license_file_callback(void* data, const char* dir, const char* file) {
   // Ignore non rif content
   if ((strlen(file) < 4) || (strcasecmp(&file[strlen(file) - 4], ".rif") != 0))
     return;
+  if (license_data->error < 0)
+    return;
   if (license_data->copy_pass) {
     snprintf(path, sizeof(path), "%s/%s", dir, file);
-    SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0777);
-    if (fd > 0) {
-      int read = sceIoRead(fd, license_data->rif, RIF_SIZE);
-      if (read == RIF_SIZE) {
-        if (insert_rif(LICENSE_DB, license_data->rif) == 0)
-          license_data->copied++;
-      }
-      sceIoClose(fd);
+    int res = licenseImportRif(path, license_data->rif, RIF_SIZE,
+                               VITASHELL_ERROR_INTERNAL, &license_file_ops);
+    if (res < 0) {
+      debugPrintf("Import licenses: licenseImportRif(path=%s) returned 0x%08X\n",
+                  path, res);
+      license_data->error = res;
+      return;
     }
+    license_data->copied++;
     SetProgress(++license_data->processed, license_data->count);
   } else {
     license_data->count++;
@@ -742,20 +1108,92 @@ void license_dir_callback(void* data, const char* dir, const char* subdir) {
   license_data_t *license_data = (license_data_t*)data;
   char path[MAX_PATH_LENGTH];
 
+  if (license_data->error < 0)
+    return;
+
   snprintf(path, sizeof(path), "%s/%s", dir, subdir);
+  int res;
   if (++license_data->cur_depth == license_data->max_depth)
-    parse_dir_with_callback(SCE_S_IFREG, path, license_file_callback, data);
+    res = parse_dir_with_callback(SCE_S_IFREG, path, license_file_callback, data);
   else
-    parse_dir_with_callback(SCE_S_IFDIR, path, license_dir_callback, data);
+    res = parse_dir_with_callback(SCE_S_IFDIR, path, license_dir_callback, data);
   license_data->cur_depth--;
+  if (res < 0 && license_data->error == 0) {
+    debugPrintf("Import licenses: parse_dir_with_callback(path=%s) returned "
+                "0x%08X\n", path, res);
+    license_data->error = res;
+  }
+}
+
+static int licenseScanCategory(void *context, const char *root) {
+  license_data_t *license_data = context;
+  int res = parse_dir_with_callback(SCE_S_IFDIR, root, license_dir_callback,
+                                    license_data);
+  // A failure inside the category stops the import before the next category.
+  if (res == 0 && license_data->error < 0)
+    res = license_data->error;
+  // The next category scans one level deeper regardless of this scan's result.
+  license_data->max_depth++;
+  return res;
+}
+
+static void licenseReportSkip(void *context, const char *root, int error) {
+  (void)context;
+  debugPrintf("Import licenses: parse_dir_with_callback(path=%s) returned "
+              "0x%08X; skipping absent category\n", root, error);
+}
+
+static void licenseReportError(void *context, const char *root, int error) {
+  (void)context;
+  debugPrintf("Import licenses: licenseScanCategory(root=%s) returned 0x%08X\n",
+              root, error);
+}
+
+static int licensePrepareImport(void *context) {
+  license_data_t *license_data = context;
+
+  // Update thread
+  license_data->update_thid = createStartUpdateThread(license_data->count, 0);
+
+  // Reset the state that drives the copy pass
+  license_data->copy_pass = 1;
+  license_data->max_depth = 1;
+  license_data->error = 0;
+
+  // Create the DB if needed
+  SceUID fd = sceIoOpen(LICENSE_DB, SCE_O_RDONLY, 0777);
+  if (fd >= 0) {
+    sceIoClose(fd);
+    return 0;
+  }
+  int db_error = create_db(LICENSE_DB, LICENSE_DB_SCHEMA);
+  if (db_error != 0) {
+    debugPrintf("Import licenses: create_db(path=%s) returned %d\n",
+                LICENSE_DB, db_error);
+    return VITASHELL_ERROR_INTERNAL;
+  }
+  return 0;
 }
 
 int license_thread(SceSize args, void *argp) {
-  SceUID thid = -1;
-  license_data_t license_data = { 0, 0, 0, 0, 0, 1, malloc(RIF_SIZE) };
+  license_data_t license_data = {
+    .max_depth = 1, .update_thid = -1, .rif = malloc(RIF_SIZE)
+  };
+  static const char *const license_roots[] = {
+    "ux0:license/app",
+    "ux0:license/addcont",
+  };
+  int import_error = 0;
 
-  if (license_data.rif == NULL)
-    goto EXIT;
+  if (license_data.rif == NULL) {
+    closeWaitDialog();
+    errorDialog(VITASHELL_ERROR_INTERNAL);
+    // NB: return directly instead of goto EXIT. EXIT releases the power
+    // lock, which this path never acquired; unlocking here would steal one
+    // reference from an overlapping operation (e.g. FTP + license import)
+    // and drop the PS-button guard while work remains active.
+    return sceKernelExitDeleteThread(0);
+  }
 
   // Lock power timers
   powerLock();
@@ -764,32 +1202,21 @@ int license_thread(SceSize args, void *argp) {
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 0);
   sceKernelDelayThread(DIALOG_WAIT); // Needed to see the percentage
 
+  LicenseImportOps import_ops = {
+    .scan = {
+      &license_data,
+      licenseScanCategory,
+      licenseReportSkip,
+      licenseReportError,
+    },
+    .prepare_import = licensePrepareImport,
+  };
+
   // NB: ux0:license access requires elevated permisions
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) < 0)
-    goto EXIT;
-  license_data.max_depth++;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) < 0)
-    goto EXIT;
-
-  // Update thread
-  thid = createStartUpdateThread(license_data.count, 0);
-
-  // Create the DB if needed
-  SceUID fd = sceIoOpen(LICENSE_DB, SCE_O_RDONLY, 0777);
-  if (fd > 0) {
-    sceIoClose(fd);
-  } else if (create_db(LICENSE_DB, LICENSE_DB_SCHEMA) != 0) {
-    goto EXIT;
-  }
-
-  // Insert the licenses
-  license_data.copy_pass = 1;
-  license_data.max_depth = 1;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/app", license_dir_callback, &license_data) < 0)
-    goto EXIT;
-  license_data.max_depth++;
-  if (parse_dir_with_callback(SCE_S_IFDIR, "ux0:license/addcont", license_dir_callback, &license_data) < 0)
-    goto EXIT;
+  if (licenseImportCategories(license_roots,
+                              sizeof(license_roots) / sizeof(license_roots[0]),
+                              &import_ops, &import_error) != LICENSE_SCAN_COMPLETED)
+    goto SCAN_DONE;
 
   // Set progress to 100%
   sceMsgDialogProgressBarSetValue(SCE_MSG_DIALOG_PROGRESSBAR_TARGET_BAR_DEFAULT, 100);
@@ -799,10 +1226,25 @@ int license_thread(SceSize args, void *argp) {
   closeWaitDialog();
 
   infoDialog(language_container[IMPORTED_LICENSES], license_data.copied);
+  goto EXIT;
+
+SCAN_DONE:
+  // Cancellation already closed the dialog and is not an error. A failure
+  // keeps every license imported so far and reports the count with the error.
+  if (import_error < 0) {
+    char imported_message[128];
+    char error_message[128];
+    snprintf(imported_message, sizeof(imported_message),
+             language_container[IMPORTED_LICENSES], license_data.copied);
+    snprintf(error_message, sizeof(error_message),
+             language_container[ERROR], import_error);
+    closeWaitDialog();
+    infoDialog("%s\n%s", imported_message, error_message);
+  }
 
 EXIT:
-  if (thid >= 0)
-    sceKernelWaitThreadEnd(thid, NULL, NULL);
+  if (license_data.update_thid >= 0)
+    sceKernelWaitThreadEnd(license_data.update_thid, NULL, NULL);
 
   // Unlock power timers
   powerUnlock();

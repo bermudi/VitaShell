@@ -9,3 +9,4 @@
 !release/param.sfo
 *.velf
 build
+build-host
