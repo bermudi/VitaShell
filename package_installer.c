@@ -357,10 +357,13 @@ int makeHeadBin() {
 
   free(head_bin);
 
-  if (res < 0)
-    return res;
-  if (res != head_size)
-    return VITASHELL_ERROR_INTERNAL;
+  if (res < 0 || res != head_size) {
+    // WriteFile() truncates on open, so a failed or short write leaves a
+    // partial head.bin. Remove it: a later run would mistake it for a valid
+    // one (checkFileExist() above) and promote with a corrupt head.bin.
+    sceIoRemove(HEAD_BIN);
+    return res < 0 ? res : VITASHELL_ERROR_INTERNAL;
+  }
   return 0;
 }
 
